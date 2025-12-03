@@ -423,8 +423,8 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
   const { assetCategories } = req.body;
 
   console.log(
-    "POST /api/assets/state for userId =",
-    userId,
+    "PROTECT POST /api/assets/state for userId =", 
+    userId, 
     "categories length =",
     Array.isArray(assetCategories) ? assetCategories.length : "not array"
   );
@@ -433,6 +433,16 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
     return res
       .status(400)
       .json({ error: "assetCategories має бути масивом" });
+  }
+
+  // 🔒 Захист від випадкового обнулення
+  if (assetCategories.length === 0) {
+    console.log(
+      "Skip saving EMPTY snapshot for userId =", 
+      userId, 
+      "(leave previous data unchanged)"
+    );
+    return res.json({ ok: true, skipped: true });
   }
 
   try {
@@ -445,7 +455,7 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
     });
 
     console.log(
-      "Snapshot saved for userId =",
+      "Saved NON-EMPTY snapshot for userId =",
       userId,
       "bytes =",
       data.length
@@ -457,3 +467,4 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
