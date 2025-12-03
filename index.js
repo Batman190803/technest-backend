@@ -33,12 +33,18 @@ function authMiddleware(req, res, next) {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload;
+
+    // 🔥 ДОДАЄМО ЛОГ
+    console.log("AUTH payload:", payload);
+
+    req.user = payload; // { userId, username, role }
     next();
   } catch (e) {
+    console.error("JWT verify error:", e);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
+
 
 // ====== ping ======
 app.get("/api/health", (req, res) => {
@@ -380,6 +386,8 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
 app.get("/api/assets/state", authMiddleware, async (req, res) => {
   const userId = req.user.userId;
 
+  console.log("GET /api/assets/state for userId =", userId);
+
   try {
     const snapshot = await prisma.assetSnapshot.findUnique({
       where: { userId },
@@ -389,9 +397,17 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
     if (snapshot && snapshot.data) {
       try {
         assetCategories = JSON.parse(snapshot.data);
+        console.log(
+          "Found snapshot for userId =",
+          userId,
+          "categories length =",
+          Array.isArray(assetCategories) ? assetCategories.length : "not array"
+        );
       } catch (e) {
         console.error("Parse assetSnapshot.data error", e);
       }
+    } else {
+      console.log("No snapshot for userId =", userId);
     }
 
     res.json({ assetCategories });
@@ -401,9 +417,17 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
   }
 });
 
+
 app.post("/api/assets/state", authMiddleware, async (req, res) => {
   const userId = req.user.userId;
   const { assetCategories } = req.body;
+
+  console.log(
+    "POST /api/assets/state for userId =",
+    userId,
+    "categories length =",
+    Array.isArray(assetCategories) ? assetCategories.length : "not array"
+  );
 
   if (!Array.isArray(assetCategories)) {
     return res
@@ -419,6 +443,13 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
       update: { data },
       create: { userId, data },
     });
+
+    console.log(
+      "Snapshot saved for userId =",
+      userId,
+      "bytes =",
+      data.length
+    );
 
     res.json({ ok: true, updatedAt: snapshot.updatedAt });
   } catch (e) {
