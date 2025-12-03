@@ -2,11 +2,12 @@
   "name": "technest-backend",
   "version": "1.0.0",
   "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js",
-    "prisma:migrate": "npx prisma migrate deploy",
-    "prisma:generate": "npx prisma generate"
+ "scripts": {
+  "start": "node index.js",
+  "dev": "node index.js",
+  "prisma:migrate:deploy": "npx prisma migrate deploy",
+  "prisma:migrate": "npx prisma migrate dev --name init",
+  "prisma:generate": "npx prisma generate"
   },
   "keywords": [],
   "author": "",
