@@ -3,12 +3,82 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+
+// ====== Налаштування шифрування ======
+const ENC_ALGO = "aes-256-gcm";
+
+// Ключ беремо як hex-рядок (64 символи) і конвертимо в Buffer
+let ENC_KEY = null;
+if (process.env.ENCRYPTION_KEY) {
+  try {
+    ENC_KEY = Buffer.from(process.env.ENCRYPTION_KEY, "hex");
+    if (ENC_KEY.length !== 32) {
+      console.error(
+        "[ENCRYPTION] ENCRYPTION_KEY must be 32 bytes (64 hex chars). Got length:",
+        ENC_KEY.length
+      );
+      ENC_KEY = null;
+    }
+  } catch (e) {
+    console.error("[ENCRYPTION] Failed to parse ENCRYPTION_KEY from hex:", e);
+    ENC_KEY = null;
+  }
+} else {
+  console.warn(
+    "[ENCRYPTION] ENCRYPTION_KEY is not set. Snapshots WILL NOT be encrypted!"
+  );
+}
+
+// Шифруємо будь-який JS-об’єкт в base64-строку
+function encryptJson(obj) {
+  if (!ENC_KEY) {
+    // fallback: без шифрування
+    return JSON.stringify(obj);
+  }
+  const iv = crypto.randomBytes(12); // стандарт для GCM
+  const cipher = crypto.createCipheriv(ENC_ALGO, ENC_KEY, iv);
+
+  const json = JSON.stringify(obj);
+  const enc = Buffer.concat([cipher.update(json, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  // Склеюємо: [iv(12b) | tag(16b) | ciphertext]
+  const combined = Buffer.concat([iv, tag, enc]);
+  return combined.toString("base64");
+}
+
+// Розшифровуємо base64-строку в JS-об’єкт
+function decryptJson(str) {
+  if (!str) return [];
+  if (!ENC_KEY) {
+    // fallback: значить зберігали без шифрування
+    return JSON.parse(str);
+  }
+
+  try {
+    const raw = Buffer.from(str, "base64");
+    const iv = raw.subarray(0, 12);
+    const tag = raw.subarray(12, 28);
+    const enc = raw.subarray(28);
+
+    const decipher = crypto.createDecipheriv(ENC_ALGO, ENC_KEY, iv);
+    decipher.setAuthTag(tag);
+
+    const dec = Buffer.concat([decipher.update(enc), decipher.final()]);
+    return JSON.parse(dec.toString("utf8"));
+  } catch (e) {
+    console.error("[ENCRYPTION] decryptJson error, fallback to plain JSON:", e);
+    // якщо раптом рядок — це не base64, а старий JSON
+    return JSON.parse(str);
+  }
+}
 
 const app = express();
 
@@ -413,7 +483,7 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
     let assetCategories = [];
     if (snapshot && snapshot.data) {
       try {
-        assetCategories = JSON.parse(snapshot.data);
+        assetCategories = decryptJson(snapshot.data);
         console.log(
           "Found snapshot for userId =",
           userId,
@@ -423,7 +493,7 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
             : "not array"
         );
       } catch (e) {
-        console.error("Parse assetSnapshot.data error", e);
+        console.error("Decrypt assetSnapshot.data error", e);
       }
     } else {
       console.log("No snapshot for userId =", userId);
@@ -464,7 +534,7 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
   }
 
   try {
-    const data = JSON.stringify(assetCategories);
+    const data = encryptJson(assetCategories);
 
     const snapshot = await prisma.assetSnapshot.upsert({
       where: { userId },
