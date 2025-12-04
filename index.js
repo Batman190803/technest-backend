@@ -4,10 +4,6 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { PrismaClient } = require("@prisma/client");
-const {
-  encryptFields,
-  decryptFields,
-} = require("./encryption"); // ⬅️ ДОДАЛИ
 
 const prisma = new PrismaClient();
 
@@ -19,100 +15,9 @@ const app = express();
 app.use(cors());
 app.use(
   express.json({
-    limit: "5mb", // трошки запасу під великі снапшоти
+    limit: "1mb", // 👈 достатньо під наші снапшоти
   })
 );
-
-// ====== Prisma middleware для шифрування/дешифрування ======
-prisma.$use(async (params, next) => {
-  // --- перед запитом: шифруємо дані для запису ---
-  if (params.model === "Asset") {
-    if (["create", "update", "upsert"].includes(params.action)) {
-      if (params.args.data) {
-        encryptFields(params.args.data, [
-          "name",
-          "inventoryNumber",
-          "model",
-          "serialNumber",
-          "status",
-          "room",
-          "responsible",
-          "phone",
-          "groupName",
-          "comments",
-          "qrCode",
-        ]);
-      }
-    }
-  }
-
-  if (params.model === "AssetCategory") {
-    if (["create", "update", "upsert"].includes(params.action)) {
-      if (params.args.data) {
-        encryptFields(params.args.data, ["title"]);
-      }
-    }
-  }
-
-  if (params.model === "AssetSnapshot") {
-    if (["create", "update", "upsert"].includes(params.action)) {
-      if (params.args.data && params.args.data.data) {
-        // data — твій JSON-рядок з assetCategories
-        encryptFields(params.args.data, ["data"]);
-      }
-    }
-  }
-
-  // робимо реальний запит до БД
-  const result = await next(params);
-
-  // --- після запиту: дешифруємо перед поверненням у код/клієнт ---
-
-  const decryptAsset = (asset) =>
-    decryptFields(asset, [
-      "name",
-      "inventoryNumber",
-      "model",
-      "serialNumber",
-      "status",
-      "room",
-      "responsible",
-      "phone",
-      "groupName",
-      "comments",
-      "qrCode",
-    ]);
-
-  const decryptAssetCategory = (cat) => decryptFields(cat, ["title"]);
-
-  const decryptAssetSnapshot = (snap) => decryptFields(snap, ["data"]);
-
-  function handleDecryption(model, res) {
-    if (!res) return res;
-
-    if (Array.isArray(res)) {
-      return res.map((item) => handleDecryption(model, item));
-    }
-
-    if (model === "Asset") {
-      return decryptAsset(res);
-    }
-    if (model === "AssetCategory") {
-      return decryptAssetCategory(res);
-    }
-    if (model === "AssetSnapshot") {
-      return decryptAssetSnapshot(res);
-    }
-
-    return res;
-  }
-
-  if (["Asset", "AssetCategory", "AssetSnapshot"].includes(params.model)) {
-    return handleDecryption(params.model, result);
-  }
-
-  return result;
-});
 
 // ====== хелпер для створення токена ======
 function signToken(user) {
@@ -134,6 +39,7 @@ function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
 
+    // Лог для дебага
     console.log("AUTH payload:", payload);
 
     req.user = payload; // { userId, username, role }
@@ -176,6 +82,7 @@ app.post("/api/auth/register", async (req, res) => {
       },
     });
 
+    // дефолтні категорії
     await prisma.assetCategory.createMany({
       data: [
         { title: "Комп'ютери", userId: user.id },
@@ -296,6 +203,7 @@ app.post("/api/assets/items", authMiddleware, async (req, res) => {
       });
     }
 
+    // Перевіряємо, що категорія належить цьому користувачу
     const cat = await prisma.assetCategory.findFirst({
       where: { id: categoryId, userId },
     });
@@ -360,6 +268,7 @@ app.put("/api/assets/items/:id", authMiddleware, async (req, res) => {
 
 // ====== АККАУНТ КОРИСТУВАЧА ======
 
+// Зміна пароля
 app.post("/api/account/change-password", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -370,10 +279,12 @@ app.post("/api/account/change-password", authMiddleware, async (req, res) => {
     }
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) return res.status(404).json({ error: "Користувач не знайдений" });
+    if (!user)
+      return res.status(404).json({ error: "Користувач не знайдений" });
 
     const ok = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!ok) return res.status(400).json({ error: "Невірний поточний пароль" });
+    if (!ok)
+      return res.status(400).json({ error: "Невірний поточний пароль" });
 
     const newHash = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
@@ -388,6 +299,7 @@ app.post("/api/account/change-password", authMiddleware, async (req, res) => {
   }
 });
 
+// Видалення власного акаунта
 app.delete("/api/account", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -396,6 +308,9 @@ app.delete("/api/account", authMiddleware, async (req, res) => {
       where: { category: { userId } },
     });
     await prisma.assetCategory.deleteMany({
+      where: { userId },
+    });
+    await prisma.assetSnapshot.deleteMany({
       where: { userId },
     });
 
@@ -408,7 +323,7 @@ app.delete("/api/account", authMiddleware, async (req, res) => {
   }
 });
 
-// ====== АДМІН ======
+// ====== АДМІН (список користувачів, ролі, видалення) ======
 
 app.get("/api/admin/users", authMiddleware, async (req, res) => {
   try {
@@ -428,28 +343,32 @@ app.get("/api/admin/users", authMiddleware, async (req, res) => {
   }
 });
 
-app.post("/api/admin/users/:username/role", authMiddleware, async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Доступ заборонено" });
+app.post(
+  "/api/admin/users/:username/role",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Доступ заборонено" });
+      }
+
+      const username = req.params.username;
+      const { role } = req.body;
+      if (!role) return res.status(400).json({ error: "Вкажіть роль" });
+
+      const user = await prisma.user.update({
+        where: { username },
+        data: { role },
+        select: { id: true, username: true, role: true },
+      });
+
+      res.json({ user });
+    } catch (e) {
+      console.error("Admin set role error", e);
+      res.status(500).json({ error: "Server error" });
     }
-
-    const username = req.params.username;
-    const { role } = req.body;
-    if (!role) return res.status(400).json({ error: "Вкажіть роль" });
-
-    const user = await prisma.user.update({
-      where: { username },
-      data: { role },
-      select: { id: true, username: true, role: true },
-    });
-
-    res.json({ user });
-  } catch (e) {
-    console.error("Admin set role error", e);
-    res.status(500).json({ error: "Server error" });
   }
-});
+);
 
 app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
   try {
@@ -460,7 +379,8 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
     const username = req.params.username;
 
     const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(404).json({ error: "Користувач не знайдений" });
+    if (!user)
+      return res.status(404).json({ error: "Користувач не знайдений" });
 
     const userId = user.id;
 
@@ -468,6 +388,9 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
       where: { category: { userId } },
     });
     await prisma.assetCategory.deleteMany({
+      where: { userId },
+    });
+    await prisma.assetSnapshot.deleteMany({
       where: { userId },
     });
     await prisma.user.delete({ where: { id: userId } });
@@ -481,12 +404,13 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
 
 // ==== СТАН АКТИВІВ (JSON снапшот) ====
 
+// Отримати стан
 app.get("/api/assets/state", authMiddleware, async (req, res) => {
   const userId = req.user.userId;
 
   console.log("GET /api/assets/state for userId =", userId);
 
-  try {
+  try:
     const snapshot = await prisma.assetSnapshot.findUnique({
       where: { userId },
     });
@@ -499,7 +423,9 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
           "Found snapshot for userId =",
           userId,
           "categories length =",
-          Array.isArray(assetCategories) ? assetCategories.length : "not array"
+          Array.isArray(assetCategories)
+            ? assetCategories.length
+            : "not array"
         );
       } catch (e) {
         console.error("Parse assetSnapshot.data error", e);
@@ -515,6 +441,7 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
   }
 });
 
+// Зберегти стан
 app.post("/api/assets/state", authMiddleware, async (req, res) => {
   const userId = req.user.userId;
   const { assetCategories } = req.body;
@@ -532,6 +459,7 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
       .json({ error: "assetCategories має бути масивом" });
   }
 
+  // Захист від випадкового обнулення
   if (assetCategories.length === 0) {
     console.log(
       "Skip saving EMPTY snapshot for userId =",
@@ -564,7 +492,7 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
   }
 });
 
-// ====== старт ======
+// ====== старт сервера ======
 app.listen(PORT, () => {
   console.log(`TechNest backend listening on http://localhost:${PORT}`);
 });
