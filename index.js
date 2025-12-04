@@ -15,7 +15,7 @@ const app = express();
 app.use(cors());
 app.use(
   express.json({
-    limit: "1mb", // 👈 достатньо під наші снапшоти
+    limit: "1mb", // достатньо під наші снапшоти
   })
 );
 
@@ -39,7 +39,6 @@ function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
 
-    // Лог для дебага
     console.log("AUTH payload:", payload);
 
     req.user = payload; // { userId, username, role }
@@ -82,7 +81,6 @@ app.post("/api/auth/register", async (req, res) => {
       },
     });
 
-    // дефолтні категорії
     await prisma.assetCategory.createMany({
       data: [
         { title: "Комп'ютери", userId: user.id },
@@ -203,7 +201,6 @@ app.post("/api/assets/items", authMiddleware, async (req, res) => {
       });
     }
 
-    // Перевіряємо, що категорія належить цьому користувачу
     const cat = await prisma.assetCategory.findFirst({
       where: { id: categoryId, userId },
     });
@@ -268,7 +265,6 @@ app.put("/api/assets/items/:id", authMiddleware, async (req, res) => {
 
 // ====== АККАУНТ КОРИСТУВАЧА ======
 
-// Зміна пароля
 app.post("/api/account/change-password", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -299,7 +295,6 @@ app.post("/api/account/change-password", authMiddleware, async (req, res) => {
   }
 });
 
-// Видалення власного акаунта
 app.delete("/api/account", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -323,7 +318,7 @@ app.delete("/api/account", authMiddleware, async (req, res) => {
   }
 });
 
-// ====== АДМІН (список користувачів, ролі, видалення) ======
+// ====== АДМІН ======
 
 app.get("/api/admin/users", authMiddleware, async (req, res) => {
   try {
@@ -410,7 +405,7 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
 
   console.log("GET /api/assets/state for userId =", userId);
 
-  try:
+  try {
     const snapshot = await prisma.assetSnapshot.findUnique({
       where: { userId },
     });
@@ -459,7 +454,6 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
       .json({ error: "assetCategories має бути масивом" });
   }
 
-  // Захист від випадкового обнулення
   if (assetCategories.length === 0) {
     console.log(
       "Skip saving EMPTY snapshot for userId =",
