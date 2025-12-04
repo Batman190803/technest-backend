@@ -4,9 +4,12 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { PrismaClient } = require("@prisma/client");
+const {
+  encryptFields,
+  decryptFields,
+} = require("./encryption"); // ⬅️ ДОДАЛИ
 
 const prisma = new PrismaClient();
-
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
@@ -16,10 +19,100 @@ const app = express();
 app.use(cors());
 app.use(
   express.json({
-    limit: "1mb", // 👈 цього достатньо під наші снапшоти
+    limit: "5mb", // трошки запасу під великі снапшоти
   })
 );
 
+// ====== Prisma middleware для шифрування/дешифрування ======
+prisma.$use(async (params, next) => {
+  // --- перед запитом: шифруємо дані для запису ---
+  if (params.model === "Asset") {
+    if (["create", "update", "upsert"].includes(params.action)) {
+      if (params.args.data) {
+        encryptFields(params.args.data, [
+          "name",
+          "inventoryNumber",
+          "model",
+          "serialNumber",
+          "status",
+          "room",
+          "responsible",
+          "phone",
+          "groupName",
+          "comments",
+          "qrCode",
+        ]);
+      }
+    }
+  }
+
+  if (params.model === "AssetCategory") {
+    if (["create", "update", "upsert"].includes(params.action)) {
+      if (params.args.data) {
+        encryptFields(params.args.data, ["title"]);
+      }
+    }
+  }
+
+  if (params.model === "AssetSnapshot") {
+    if (["create", "update", "upsert"].includes(params.action)) {
+      if (params.args.data && params.args.data.data) {
+        // data — твій JSON-рядок з assetCategories
+        encryptFields(params.args.data, ["data"]);
+      }
+    }
+  }
+
+  // робимо реальний запит до БД
+  const result = await next(params);
+
+  // --- після запиту: дешифруємо перед поверненням у код/клієнт ---
+
+  const decryptAsset = (asset) =>
+    decryptFields(asset, [
+      "name",
+      "inventoryNumber",
+      "model",
+      "serialNumber",
+      "status",
+      "room",
+      "responsible",
+      "phone",
+      "groupName",
+      "comments",
+      "qrCode",
+    ]);
+
+  const decryptAssetCategory = (cat) => decryptFields(cat, ["title"]);
+
+  const decryptAssetSnapshot = (snap) => decryptFields(snap, ["data"]);
+
+  function handleDecryption(model, res) {
+    if (!res) return res;
+
+    if (Array.isArray(res)) {
+      return res.map((item) => handleDecryption(model, item));
+    }
+
+    if (model === "Asset") {
+      return decryptAsset(res);
+    }
+    if (model === "AssetCategory") {
+      return decryptAssetCategory(res);
+    }
+    if (model === "AssetSnapshot") {
+      return decryptAssetSnapshot(res);
+    }
+
+    return res;
+  }
+
+  if (["Asset", "AssetCategory", "AssetSnapshot"].includes(params.model)) {
+    return handleDecryption(params.model, result);
+  }
+
+  return result;
+});
 
 // ====== хелпер для створення токена ======
 function signToken(user) {
@@ -41,7 +134,6 @@ function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
 
-    // 🔥 ДОДАЄМО ЛОГ
     console.log("AUTH payload:", payload);
 
     req.user = payload; // { userId, username, role }
@@ -51,7 +143,6 @@ function authMiddleware(req, res, next) {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
-
 
 // ====== ping ======
 app.get("/api/health", (req, res) => {
@@ -85,7 +176,6 @@ app.post("/api/auth/register", async (req, res) => {
       },
     });
 
-    // Можна створити дефолтні категорії, як у твоєму демо
     await prisma.assetCategory.createMany({
       data: [
         { title: "Комп'ютери", userId: user.id },
@@ -206,7 +296,6 @@ app.post("/api/assets/items", authMiddleware, async (req, res) => {
       });
     }
 
-    // Перевіряємо, що категорія належить цьому користувачу
     const cat = await prisma.assetCategory.findFirst({
       where: { id: categoryId, userId },
     });
@@ -269,12 +358,8 @@ app.put("/api/assets/items/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// TODO: видалення активів, сервісна історія, документи і т.д.
+// ====== АККАУНТ КОРИСТУВАЧА ======
 
-// ====== старт ======
-app.listen(PORT, () => {
-  console.log(`TechNest backend listening on http://localhost:${PORT}`);
-});
 app.post("/api/account/change-password", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -302,11 +387,11 @@ app.post("/api/account/change-password", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 app.delete("/api/account", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
 
-    // спочатку видаляємо всі активи та категорії користувача
     await prisma.asset.deleteMany({
       where: { category: { userId } },
     });
@@ -322,6 +407,9 @@ app.delete("/api/account", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+// ====== АДМІН ======
+
 app.get("/api/admin/users", authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -339,6 +427,7 @@ app.get("/api/admin/users", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 app.post("/api/admin/users/:username/role", authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -361,6 +450,7 @@ app.post("/api/admin/users/:username/role", authMiddleware, async (req, res) => 
     res.status(500).json({ error: "Server error" });
   }
 });
+
 app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -388,6 +478,7 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 // ==== СТАН АКТИВІВ (JSON снапшот) ====
 
 app.get("/api/assets/state", authMiddleware, async (req, res) => {
@@ -424,14 +515,13 @@ app.get("/api/assets/state", authMiddleware, async (req, res) => {
   }
 });
 
-
 app.post("/api/assets/state", authMiddleware, async (req, res) => {
   const userId = req.user.userId;
   const { assetCategories } = req.body;
 
   console.log(
-    "PROTECT POST /api/assets/state for userId =", 
-    userId, 
+    "PROTECT POST /api/assets/state for userId =",
+    userId,
     "categories length =",
     Array.isArray(assetCategories) ? assetCategories.length : "not array"
   );
@@ -442,11 +532,10 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
       .json({ error: "assetCategories має бути масивом" });
   }
 
-  // 🔒 Захист від випадкового обнулення
   if (assetCategories.length === 0) {
     console.log(
-      "Skip saving EMPTY snapshot for userId =", 
-      userId, 
+      "Skip saving EMPTY snapshot for userId =",
+      userId,
       "(leave previous data unchanged)"
     );
     return res.json({ ok: true, skipped: true });
@@ -475,3 +564,7 @@ app.post("/api/assets/state", authMiddleware, async (req, res) => {
   }
 });
 
+// ====== старт ======
+app.listen(PORT, () => {
+  console.log(`TechNest backend listening on http://localhost:${PORT}`);
+});
