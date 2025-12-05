@@ -195,43 +195,52 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 
+// Логін
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
+
     if (!username || !password) {
-      return res.status(400).json({ error: "Вкажіть логін і пароль" });
+      return res
+        .status(400)
+        .json({ error: "Вкажіть логін і пароль" });
     }
 
-    const user = await prisma.user.findUnique({ where: { username } });
+    const user = await prisma.user.findUnique({
+      where: { username },
+    });
+
     if (!user) {
-      return res.status(400).json({ error: "Невірний логін або пароль" });
+      return res
+        .status(400)
+        .json({ error: "Невірний логін або пароль" });
     }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
-      return res.status(400).json({ error: "Невірний логін або пароль" });
+      return res
+        .status(400)
+        .json({ error: "Невірний логін або пароль" });
     }
-    // Якщо в користувача ще немає email (старий акаунт) —
-    // тимчасово даємо увійти БЕЗ 2FA
+
+    // 🔹 Тимчасово: старі акаунти без email заходять без 2FA
     if (!user.email) {
       const token = signToken(user);
       return res.json({
         token,
         user: { id: user.id, username: user.username, role: user.role },
-        legacyNoEmail: true, // на всяк випадок, щоб на фронті знати
+        legacyNoEmail: true,
       });
     }
 
-    // === 1) Генеруємо 6-значний код ===
-    const code = generate2FACode();
+    // 🔹 Нові акаунти з email — логін через 2FA по пошті
 
-
-    // === 1) Генеруємо 6-значний код ===
+    // 1) Генеруємо код
     const code = generate2FACode();
     const codeHash = hashCode(code);
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 хвилин
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 хв
 
-    // === 2) Зберігаємо код в user ===
+    // 2) Зберігаємо код у юзера
     await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -241,16 +250,16 @@ app.post("/api/auth/login", async (req, res) => {
       },
     });
 
-    // === 3) Надсилаємо код на пошту ===
+    // 3) Шлемо код на пошту
     await send2FACodeEmail(user.email, code);
 
-    // === 4) Тимчасовий токен, що каже: "пароль ОК, чекаємо код з пошти" ===
+    // 4) Видаємо тимчасовий токен 2FA
     const twofaToken = jwt.sign(
       {
         userId: user.id,
         stage: "2fa_pending",
       },
-      JWT_SECRET, // можеш замінити на TWO_FA_SECRET, якщо хочеш окремий
+      JWT_SECRET,
       { expiresIn: "10m" }
     );
 
@@ -260,7 +269,7 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (e) {
     console.error("Login error", e);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
