@@ -1,3 +1,10 @@
+
+const {
+  generate2FACode,
+  hashCode,
+  send2FACodeEmail,
+} = require("./email2fa");
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -12,7 +19,7 @@ const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
 
-const TWO_FA_SECRET = process.env.TWO_FA_SECRET || "dev_2fa_secret";
+//const TWO_FA_SECRET = process.env.TWO_FA_SECRET || "dev_2fa_secret";
 
 // ====== Налаштування шифрування ======
 const ENC_ALGO = "aes-256-gcm";
@@ -100,86 +107,7 @@ function signToken(user) {
     { expiresIn: "7d" }
   );
 }
-const speakeasy = require("speakeasy");
-// ==== 2FA: налаштування (генерація секрету) ====
-// Користувач має бути залогінений (JWT), але twoFactorEnabled ще false
-app.post("/api/auth/2fa/setup", authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.userId;
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) return res.status(404).json({ error: "Користувач не знайдений" });
-
-    // Генеруємо секрет для TOTP
-    const secret = speakeasy.generateSecret({
-      name: `TechNest (${user.username})`,
-      length: 20,
-    });
-
-    // Зберігаємо ТІЛЬКИ base32 секрет у БД
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        twoFactorSecret: secret.base32,
-        twoFactorEnabled: false, // ще не підтверджено
-      },
-    });
-
-    // Віддаємо otpauth URL, щоб RN міг зробити з нього QR
-    res.json({
-      otpauthUrl: secret.otpauth_url,
-      base32: secret.base32, // на всякий випадок, але в UI головне otpauthUrl
-    });
-  } catch (e) {
-    console.error("2FA setup error", e);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-// ==== 2FA: підтвердження (включення) ====
-app.post("/api/auth/2fa/confirm", authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { token } = req.body; // 6-значний код з додатку
-
-    if (!token) {
-      return res.status(400).json({ error: "Введіть код підтвердження" });
-    }
-
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user || !user.twoFactorSecret) {
-      return res.status(400).json({ error: "2FA не налаштована" });
-    }
-
-    const verified = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
-      encoding: "base32",
-      token,
-      window: 1, // невелике вікно часу
-    });
-
-    if (!verified) {
-      return res.status(400).json({ error: "Невірний код" });
-    }
-
-    await prisma.user.update({
-      where: { id: userId },
-      data: { twoFactorEnabled: true },
-    });
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("2FA confirm error", e);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-function signTwoFactorToken(user) {
-  return jwt.sign(
-    { userId: user.id, username: user.username, twoFactorPending: true },
-    TWO_FA_SECRET,
-    { expiresIn: "10m" } // 10 хвилин
-  );
-}
 
 
 // ====== middleware для захисту роутів ======
@@ -210,19 +138,27 @@ app.get("/api/health", (req, res) => {
 
 // ====== АВТЕНТИФІКАЦІЯ ======
 
-// Реєстрація
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password || password.length < 4) {
+    const { username, password, email } = req.body;
+
+    if (!username || !password || !email || password.length < 4) {
       return res
         .status(400)
-        .json({ error: "Вкажіть логін і пароль (мін. 4 символи)" });
+        .json({ error: "Вкажіть логін, пароль (мін. 4 символи) та email" });
     }
 
-    const existing = await prisma.user.findUnique({ where: { username } });
+    // Перевірка чи існує логін або пошта
+    const existing = await prisma.user.findFirst({
+      where: {
+        OR: [{ username }, { email }],
+      },
+    });
+
     if (existing) {
-      return res.status(400).json({ error: "Такий логін уже існує" });
+      return res
+        .status(400)
+        .json({ error: "Такий логін або email уже існує" });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -231,10 +167,12 @@ app.post("/api/auth/register", async (req, res) => {
       data: {
         username,
         passwordHash,
+        email,
         role: username.toLowerCase() === "bilous" ? "admin" : "user",
       },
     });
 
+    // Стандартні категорії, як було
     await prisma.assetCategory.createMany({
       data: [
         { title: "Комп'ютери", userId: user.id },
@@ -256,7 +194,7 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-// Логін
+
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -274,77 +212,118 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Невірний логін або пароль" });
     }
 
-    // 👉 Якщо 2FA увімкнена, не віддаємо основний JWT
-    if (user.twoFactorEnabled && user.twoFactorSecret) {
-      const tempToken = signTwoFactorToken(user);
-      return res.json({
-        twoFactorRequired: true,
-        tempToken,
+    if (!user.email) {
+      return res.status(400).json({
+        error: "Для цього користувача не заданий email. Створи нового користувача.",
       });
     }
 
-    // 👉 Якщо 2FA вимкнена — працюємо як раніше
-    const token = signToken(user);
-    res.json({
-      token,
-      user: { id: user.id, username: user.username, role: user.role },
+    // === 1) Генеруємо 6-значний код ===
+    const code = generate2FACode();
+    const codeHash = hashCode(code);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 хвилин
+
+    // === 2) Зберігаємо код в user ===
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        twoFaCodeHash: codeHash,
+        twoFaCodeExpiresAt: expiresAt,
+        twoFaCodeUsed: false,
+      },
+    });
+
+    // === 3) Надсилаємо код на пошту ===
+    await send2FACodeEmail(user.email, code);
+
+    // === 4) Тимчасовий токен, що каже: "пароль ОК, чекаємо код з пошти" ===
+    const twofaToken = jwt.sign(
+      {
+        userId: user.id,
+        stage: "2fa_pending",
+      },
+      JWT_SECRET, // можеш замінити на TWO_FA_SECRET, якщо хочеш окремий
+      { expiresIn: "10m" }
+    );
+
+    return res.json({
+      status: "2fa_required",
+      twofaToken,
     });
   } catch (e) {
     console.error("Login error", e);
     res.status(500).json({ error: "Server error" });
   }
 });
-// ==== 2FA: логін з кодом ====
-app.post("/api/auth/2fa/login", async (req, res) => {
-  try {
-    const { tempToken, token } = req.body; 
-    // tempToken — тимчасовий токен з /api/auth/login
-    // token — 6-значний код з додатку
 
-    if (!tempToken || !token) {
-      return res.status(400).json({ error: "Немає tempToken або коду 2FA" });
+ 
+
+app.post("/api/auth/verify-email-2fa", async (req, res) => {
+  try {
+    const { twofaToken, code } = req.body;
+
+    if (!twofaToken || !code) {
+      return res
+        .status(400)
+        .json({ error: "Немає токена або коду" });
     }
 
     let payload;
     try {
-      payload = jwt.verify(tempToken, TWO_FA_SECRET);
+      payload = jwt.verify(twofaToken, JWT_SECRET); // або TWO_FA_SECRET
     } catch (e) {
-      console.error("2FA temp token verify error", e);
-      return res.status(401).json({ error: "Невірний або прострочений tempToken" });
+      console.error("2FA token verify error", e);
+      return res
+        .status(401)
+        .json({ error: "Невірний або прострочений 2FA токен" });
     }
 
-    if (!payload.twoFactorPending || !payload.userId) {
-      return res.status(400).json({ error: "Некоректний tempToken" });
+    const userId = payload.userId;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ error: "Користувача не знайдено" });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
-    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
-      return res.status(400).json({ error: "2FA для користувача не активна" });
+    if (!user.twoFaCodeHash || !user.twoFaCodeExpiresAt) {
+      return res
+        .status(400)
+        .json({ error: "2FA код не збережений" });
     }
 
-    const verified = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
-      encoding: "base32",
-      token,
-      window: 1,
+    const now = new Date();
+    if (user.twoFaCodeExpiresAt < now) {
+      return res.status(400).json({ error: "Код прострочений" });
+    }
+
+    if (user.twoFaCodeUsed) {
+      return res.status(400).json({ error: "Код вже використаний" });
+    }
+
+    const codeHash = hashCode(code);
+    if (codeHash !== user.twoFaCodeHash) {
+      return res.status(400).json({ error: "Невірний код" });
+    }
+
+    // Позначаємо код як використаний
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { twoFaCodeUsed: true },
     });
 
-    if (!verified) {
-      return res.status(400).json({ error: "Невірний код 2FA" });
-    }
-
-    // Все ок: видаємо звичайний JWT
+    // ТЕПЕР видаємо нормальний JWT, як раніше
     const finalToken = signToken(user);
-    res.json({
+
+    return res.json({
+      status: "ok",
       token: finalToken,
       user: { id: user.id, username: user.username, role: user.role },
     });
   } catch (e) {
-    console.error("2FA login error", e);
+    console.error("verify-email-2fa error", e);
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 // ====== АКТИВИ ======
 

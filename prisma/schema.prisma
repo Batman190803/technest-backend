@@ -15,13 +15,13 @@ model User {
   role         String   @default("user")
   createdAt    DateTime @default(now())
 
-  // 2FA
-  twoFactorEnabled Boolean @default(false)
-  twoFactorSecret  String? // base32 секрет для TOTP
-
-  categories     AssetCategory[]
-  assetSnapshot  AssetSnapshot?
+  email               String?   @unique        // e-mail (може бути null для старих юзерів)
+  twoFaCodeHash       String?                  // хеш 2FA коду
+  twoFaCodeExpiresAt  DateTime?                // доки дійсний код
+  twoFaCodeUsed       Boolean   @default(false)
 }
+
+
 
 
 model AssetCategory {
