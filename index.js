@@ -1,11 +1,7 @@
 
-const {
-  generate2FACode,
-  hashCode,
-  send2FACodeEmail,
-} = require("./email2fa");
-
 require("dotenv").config();
+console.log("SMTP_HOST =", process.env.SMTP_HOST);
+console.log("SMTP_PORT =", process.env.SMTP_PORT);
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
@@ -17,6 +13,12 @@ const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+
+const {
+  generate2FACode,
+  hashCode,
+  send2FACodeEmail,
+} = require("./email2fa");
 
 
 //const TWO_FA_SECRET = process.env.TWO_FA_SECRET || "dev_2fa_secret";
