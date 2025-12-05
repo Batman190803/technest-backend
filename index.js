@@ -211,12 +211,20 @@ app.post("/api/auth/login", async (req, res) => {
     if (!ok) {
       return res.status(400).json({ error: "Невірний логін або пароль" });
     }
-
+    // Якщо в користувача ще немає email (старий акаунт) —
+    // тимчасово даємо увійти БЕЗ 2FA
     if (!user.email) {
-      return res.status(400).json({
-        error: "Для цього користувача не заданий email. Створи нового користувача.",
+      const token = signToken(user);
+      return res.json({
+        token,
+        user: { id: user.id, username: user.username, role: user.role },
+        legacyNoEmail: true, // на всяк випадок, щоб на фронті знати
       });
     }
+
+    // === 1) Генеруємо 6-значний код ===
+    const code = generate2FACode();
+
 
     // === 1) Генеруємо 6-значний код ===
     const code = generate2FACode();
