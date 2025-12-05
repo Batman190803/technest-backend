@@ -15,10 +15,14 @@ model User {
   role         String   @default("user")
   createdAt    DateTime @default(now())
 
-  categories   AssetCategory[]
+  // 2FA
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String? // base32 секрет для TOTP
 
-  assetSnapshot AssetSnapshot? 
+  categories     AssetCategory[]
+  assetSnapshot  AssetSnapshot?
 }
+
 
 model AssetCategory {
   id      Int      @id @default(autoincrement())

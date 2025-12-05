@@ -11,6 +11,9 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
+
+const TWO_FA_SECRET = process.env.TWO_FA_SECRET || "dev_2fa_secret";
+
 // ====== Налаштування шифрування ======
 const ENC_ALGO = "aes-256-gcm";
 
@@ -97,6 +100,87 @@ function signToken(user) {
     { expiresIn: "7d" }
   );
 }
+const speakeasy = require("speakeasy");
+// ==== 2FA: налаштування (генерація секрету) ====
+// Користувач має бути залогінений (JWT), але twoFactorEnabled ще false
+app.post("/api/auth/2fa/setup", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: "Користувач не знайдений" });
+
+    // Генеруємо секрет для TOTP
+    const secret = speakeasy.generateSecret({
+      name: `TechNest (${user.username})`,
+      length: 20,
+    });
+
+    // Зберігаємо ТІЛЬКИ base32 секрет у БД
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorSecret: secret.base32,
+        twoFactorEnabled: false, // ще не підтверджено
+      },
+    });
+
+    // Віддаємо otpauth URL, щоб RN міг зробити з нього QR
+    res.json({
+      otpauthUrl: secret.otpauth_url,
+      base32: secret.base32, // на всякий випадок, але в UI головне otpauthUrl
+    });
+  } catch (e) {
+    console.error("2FA setup error", e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+// ==== 2FA: підтвердження (включення) ====
+app.post("/api/auth/2fa/confirm", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { token } = req.body; // 6-значний код з додатку
+
+    if (!token) {
+      return res.status(400).json({ error: "Введіть код підтвердження" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.twoFactorSecret) {
+      return res.status(400).json({ error: "2FA не налаштована" });
+    }
+
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: "base32",
+      token,
+      window: 1, // невелике вікно часу
+    });
+
+    if (!verified) {
+      return res.status(400).json({ error: "Невірний код" });
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorEnabled: true },
+    });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("2FA confirm error", e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+function signTwoFactorToken(user) {
+  return jwt.sign(
+    { userId: user.id, username: user.username, twoFactorPending: true },
+    TWO_FA_SECRET,
+    { expiresIn: "10m" } // 10 хвилин
+  );
+}
+
 
 // ====== middleware для захисту роутів ======
 function authMiddleware(req, res, next) {
@@ -190,6 +274,16 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Невірний логін або пароль" });
     }
 
+    // 👉 Якщо 2FA увімкнена, не віддаємо основний JWT
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      const tempToken = signTwoFactorToken(user);
+      return res.json({
+        twoFactorRequired: true,
+        tempToken,
+      });
+    }
+
+    // 👉 Якщо 2FA вимкнена — працюємо як раніше
     const token = signToken(user);
     res.json({
       token,
@@ -200,6 +294,57 @@ app.post("/api/auth/login", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+// ==== 2FA: логін з кодом ====
+app.post("/api/auth/2fa/login", async (req, res) => {
+  try {
+    const { tempToken, token } = req.body; 
+    // tempToken — тимчасовий токен з /api/auth/login
+    // token — 6-значний код з додатку
+
+    if (!tempToken || !token) {
+      return res.status(400).json({ error: "Немає tempToken або коду 2FA" });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(tempToken, TWO_FA_SECRET);
+    } catch (e) {
+      console.error("2FA temp token verify error", e);
+      return res.status(401).json({ error: "Невірний або прострочений tempToken" });
+    }
+
+    if (!payload.twoFactorPending || !payload.userId) {
+      return res.status(400).json({ error: "Некоректний tempToken" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+      return res.status(400).json({ error: "2FA для користувача не активна" });
+    }
+
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: "base32",
+      token,
+      window: 1,
+    });
+
+    if (!verified) {
+      return res.status(400).json({ error: "Невірний код 2FA" });
+    }
+
+    // Все ок: видаємо звичайний JWT
+    const finalToken = signToken(user);
+    res.json({
+      token: finalToken,
+      user: { id: user.id, username: user.username, role: user.role },
+    });
+  } catch (e) {
+    console.error("2FA login error", e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 // ====== АКТИВИ ======
 

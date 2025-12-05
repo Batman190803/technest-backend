@@ -2,15 +2,14 @@
   "name": "technest-backend",
   "version": "1.0.0",
   "main": "index.js",
- "scripts": {
-  "start": "node index.js",
-  "render:start": "npm run prisma:migrate:deploy && node index.js",
-  "dev": "node index.js",
-  "prisma:migrate:deploy": "npx prisma migrate deploy",
-  "prisma:migrate": "npx prisma migrate dev --name init",
-  "prisma:generate": "npx prisma generate"
-}
-,
+  "scripts": {
+    "start": "node index.js",
+    "render:start": "npm run prisma:migrate:deploy && node index.js",
+    "dev": "node index.js",
+    "prisma:migrate:deploy": "npx prisma migrate deploy",
+    "prisma:migrate": "npx prisma migrate dev --name init",
+    "prisma:generate": "npx prisma generate"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -22,6 +21,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
-    "prisma": "^6.19.0"
+    "prisma": "^6.19.0",
+    "speakeasy": "^2.0.0"
   }
 }
