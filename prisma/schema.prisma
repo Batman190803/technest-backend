@@ -7,7 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
 model User {
   id           Int      @id @default(autoincrement())
   username     String   @unique
@@ -15,26 +14,25 @@ model User {
   role         String   @default("user")
   createdAt    DateTime @default(now())
 
-  email               String?   @unique        // e-mail (може бути null для старих юзерів)
-  twoFaCodeHash       String?                  // хеш 2FA коду
-  twoFaCodeExpiresAt  DateTime?                // доки дійсний код
-  twoFaCodeUsed       Boolean   @default(false)
+  email              String?         @unique // e-mail (може бути null для старих юзерів)
+  twoFaCodeHash      String? // хеш 2FA коду
+  twoFaCodeExpiresAt DateTime? // доки дійсний код
+  twoFaCodeUsed      Boolean         @default(false)
+  assetCategories    AssetCategory[]
+  assetSnapshot      AssetSnapshot?
 }
 
-
-
-
 model AssetCategory {
-  id      Int      @id @default(autoincrement())
-  title   String
-  user    User     @relation(fields: [userId], references: [id])
-  userId  Int
+  id     Int    @id @default(autoincrement())
+  title  String
+  user   User   @relation(fields: [userId], references: [id])
+  userId Int
 
-  assets  Asset[]
+  assets Asset[]
 }
 
 model Asset {
-  id              Int      @id @default(autoincrement())
+  id              Int     @id @default(autoincrement())
   name            String
   inventoryNumber String
   model           String?
@@ -45,17 +43,18 @@ model Asset {
   phone           String?
   groupName       String?
   comments        String?
-  qrCode          String?   @unique
+  qrCode          String? @unique
 
   category   AssetCategory @relation(fields: [categoryId], references: [id])
   categoryId Int
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 }
+
 model AssetSnapshot {
   id        Int      @id @default(autoincrement())
   userId    Int      @unique
   user      User     @relation(fields: [userId], references: [id])
-  data      String   // JSON з assetCategories
+  data      String // JSON з assetCategories
   updatedAt DateTime @updatedAt
 }
