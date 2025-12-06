@@ -10,7 +10,7 @@ function hashCode(code) {
   return crypto.createHash("sha256").update(code).digest("hex");
 }
 
-const MAILTRAP_API_TOKEN = process.env.MAILTRAP_TOKEN;
+const MAILTRAP_TOKEN = process.env.MAILTRAP_TOKEN;
 const MAILTRAP_FROM_EMAIL = process.env.MAILTRAP_FROM_EMAIL || "hello@demomailtrap.co";
 const MAILTRAP_SENDER_NAME = process.env.MAILTRAP_SENDER_NAME || "TechNest";
 
