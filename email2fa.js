@@ -12,8 +12,8 @@ function hashCode(code) {
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT) || 2525, // 👈 2525 за замовчуванням
-  secure: false,
+  port: Number(process.env.SMTP_PORT) || 587,
+  secure: false, // для 587
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
@@ -21,18 +21,12 @@ const transporter = nodemailer.createTransport({
 });
 
 async function send2FACodeEmail(toEmail, code) {
-  try {
-    await transporter.sendMail({
-      from: '"TechNest" <no-reply@technest.app>',
-      to: toEmail,
-      subject: "Код підтвердження входу в TechNest",
-      text: `Ваш код підтвердження: ${code}. Він дійсний 5 хвилин.`,
-    });
-    console.log("2FA email sent to", toEmail);
-  } catch (err) {
-    console.error("❌ send2FACodeEmail error:", err);
-    // ВАЖЛИВО: нічого не кидаємо далі, щоб логін не падав з 500
-  }
+  await transporter.sendMail({
+    from: `"TechNest" <${process.env.SMTP_USER}>`, // ← щоб збігався з реальним ящиком
+    to: toEmail,
+    subject: "Код підтвердження входу в TechNest",
+    text: `Ваш код підтвердження: ${code}. Він дійсний 5 хвилин.`,
+  });
 }
 
 module.exports = {
