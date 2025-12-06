@@ -10,12 +10,12 @@ function hashCode(code) {
   return crypto.createHash("sha256").update(code).digest("hex");
 }
 
-const MAILTRAP_API_TOKEN = process.env.MAILTRAP_API_TOKEN;
+const MAILTRAP_API_TOKEN = process.env.MAILTRAP_TOKEN;
 const MAILTRAP_FROM_EMAIL = process.env.MAILTRAP_FROM_EMAIL || "hello@demomailtrap.co";
 const MAILTRAP_SENDER_NAME = process.env.MAILTRAP_SENDER_NAME || "TechNest";
 
 async function send2FACodeEmail(toEmail, code) {
-  if (!MAILTRAP_API_TOKEN) {
+  if (!MAILTRAP_TOKEN) {
     console.error("MAILTRAP_API_TOKEN is missing");
     throw new Error("Mailtrap API token not configured");
   }
@@ -35,7 +35,7 @@ async function send2FACodeEmail(toEmail, code) {
   try {
     const resp = await axios.post(url, payload, {
       headers: {
-        Authorization: `Bearer ${MAILTRAP_API_TOKEN}`,
+        Authorization: `Bearer ${MAILTRAP_TOKEN}`,
         "Content-Type": "application/json",
       },
     });
