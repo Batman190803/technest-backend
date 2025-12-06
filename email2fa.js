@@ -1,8 +1,9 @@
 // email2fa.js
-const axios = require("axios");
 const crypto = require("crypto");
+const axios = require("axios");
 
 function generate2FACode() {
+  // 6-значний код
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
@@ -10,44 +11,50 @@ function hashCode(code) {
   return crypto.createHash("sha256").update(code).digest("hex");
 }
 
-const MAILTRAP_TOKEN = process.env.MAILTRAP_TOKEN;
-const MAILTRAP_FROM_EMAIL =
-  process.env.MAILTRAP_FROM_EMAIL || "mailtrap@demomailtrap.co";
-const MAILTRAP_FROM_NAME = process.env.MAILTRAP_FROM_NAME || "TechNest";
-
 async function send2FACodeEmail(toEmail, code) {
+  const token = process.env.MAILTRAP_TOKEN;
+  const fromEmail = process.env.MAILTRAP_FROM_EMAIL || "mailtrap@demomailtrap.io";
+  const fromName = process.env.MAILTRAP_FROM_NAME || "TechNest";
+
+  if (!token) {
+    console.error("MAILTRAP_TOKEN is not set");
+    throw new Error("MAILTRAP_TOKEN is not set");
+  }
+
+  const payload = {
+    from: {
+      email: fromEmail,
+      name: fromName,
+    },
+    to: [
+      {
+        email: toEmail,
+      },
+    ],
+    subject: "Код підтвердження входу в TechNest",
+    text: `Ваш код підтвердження: ${code}. Він дійсний 5 хвилин.`,
+    category: "2fa",
+  };
+
   try {
     const res = await axios.post(
       "https://send.api.mailtrap.io/api/send",
-      {
-        from: {
-          email: MAILTRAP_FROM_EMAIL,
-          name: MAILTRAP_FROM_NAME,
-        },
-        to: [
-          {
-            email: toEmail, // <- сюди йде пошта користувача з реєстрації
-          },
-        ],
-        subject: "Код підтвердження входу в TechNest",
-        text: `Ваш код підтвердження: ${code}. Він дійсний 5 хвилин.`,
-      },
+      payload,
       {
         headers: {
-          Authorization: `Bearer ${MAILTRAP_TOKEN}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        timeout: 10000,
       }
     );
 
-    console.log("Mailtrap API response:", res.data);
+    console.log("Mailtrap API response status:", res.status);
   } catch (err) {
-    console.error(
-      "Mailtrap API error",
-      err.response?.status,
-      JSON.stringify(err.response?.data || {}, null, 2)
-    );
+    if (err.response) {
+      console.error("Mailtrap API error", err.response.status, err.response.data);
+    } else {
+      console.error("Mailtrap API error", err.message);
+    }
     throw new Error("Не вдалося відправити лист 2FA");
   }
 }
