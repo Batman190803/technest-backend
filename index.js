@@ -346,13 +346,12 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
 // ====== AI ЧАТ ======
 app.post("/api/ai/chat", authMiddleware, async (req, res) => {
   try {
-    // ⚠️ ВАЖЛИВО: беремо userId саме з JWT-пейлоада
     const userId = req.user.userId;
     const { message } = req.body;
 
     console.log("AI CHAT for userId =", userId);
 
-    // 1) Тягнемо останні документи цього юзера (без фільтру по text)
+    // 1) Беремо останні 5 документів БЕЗ фільтра text: { not: null }
     const docs = await prisma.assetDocument.findMany({
       where: { userId },
       take: 5,
@@ -371,22 +370,28 @@ app.post("/api/ai/chat", authMiddleware, async (req, res) => {
       }))
     );
 
-    const docsContext = docs
-      .map((d) => {
-        const preview = (d.text || "").slice(0, 2000);
-        return (
-          `Документ: ${d.fileName}\n\n` +
-          (preview || "[Текст не витягнутий з PDF або файл не PDF]")
-        );
-      })
-      .join("\n\n----------------\n\n");
+    const docsContext =
+      docs.length === 0
+        ? "Документи ще не завантажені."
+        : docs
+            .map((d) => {
+              const header = `Документ: ${d.fileName} (${d.mimeType})`;
+              if (!d.text) {
+                return (
+                  header +
+                  "\n(Текст із файлу не вдалося автоматично витягнути — можливо, це скан або зображення без тексту)."
+                );
+              }
+              return header + "\n\n" + d.text.slice(0, 2000);
+            })
+            .join("\n\n----------------\n\n");
 
     const systemPrompt =
       "Ти асистент з технічного обслуговування для мобільного застосунку TechNest. " +
       "Відповідай українською, коротко й по суті. " +
       "Якщо можеш — посилайся на наведені нижче документи.\n\n" +
       "Документи користувача:\n" +
-      (docsContext || "Документи ще не завантажені.");
+      docsContext;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
@@ -409,6 +414,7 @@ app.post("/api/ai/chat", authMiddleware, async (req, res) => {
 });
 
 
+
 // ====== ЗАВАНТАЖЕННЯ ДОКУМЕНТІВ ДЛЯ АКТИВІВ ======
 app.post(
   "/api/assets/:assetId/documents",
@@ -416,9 +422,7 @@ app.post(
   upload.single("file"),
   async (req, res) => {
     try {
-      // 🔧 БУЛО: const userId = req.user.id;
-      const userId = req.user.userId;  // ✅ БЕРЕМО userId з JWT payload
-
+      const userId = req.user.userId; // ✅ а не req.user.id
       const assetId = req.params.assetId;
       const file = req.file;
 
@@ -426,7 +430,6 @@ app.post(
         return res.status(400).json({ error: "Файл не надійшов" });
       }
 
-      // Опціонально: лог, щоб бачити, хто і що вантажить
       console.log("UPLOAD DOCUMENT:", {
         userId,
         assetId,
@@ -467,7 +470,6 @@ app.post(
     }
   }
 );
-
 
 // ====== АКТИВИ ======
 
