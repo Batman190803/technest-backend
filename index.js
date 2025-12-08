@@ -9,8 +9,44 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const fs = require("fs");
 const multer = require("multer");
-const pdfParse = require("pdf-parse");
+const { PDFParse } = require("pdf-parse");
 const { PrismaClient } = require("@prisma/client");
+
+// Покращена функція витягування тексту з PDF
+async function extractTextFromPDF(filePath) {
+  try {
+    console.log('[PDF] Початок витягування тексту з:', filePath);
+
+    const dataBuffer = await fs.promises.readFile(filePath);
+
+    // Використовуємо PDFParse v2 API
+    const parser = new PDFParse({
+      data: dataBuffer,
+      verbosity: 0 // Вимкнути детальні логи
+    });
+
+    try {
+      const result = await parser.getText();
+      const text = result.text?.trim();
+
+      if (text && text.length > 10) {
+        console.log(`[PDF] ✅ Успішно витягнуто ${text.length} символів`);
+        console.log(`[PDF] Сторінок: ${result.pages || result.numPages || 'невідомо'}`);
+        return text;
+      } else {
+        console.warn('[PDF] ⚠️ Текст занадто короткий або порожній');
+        return null;
+      }
+    } catch (parseError) {
+      console.error('[PDF] Помилка парсингу:', parseError.message);
+      return null;
+    }
+
+  } catch (error) {
+    console.error('[PDF] Критична помилка витягування тексту:', error);
+    return null;
+  }
+}
 
 const {
   generate2FACode,
@@ -587,6 +623,103 @@ app.get("/api/documents/:documentId", authMiddleware, async (req, res) => {
   }
 });
 
+// Переобробити PDF документ для витягування тексту
+app.post("/api/documents/:documentId/reprocess", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const documentId = parseInt(req.params.documentId, 10);
+
+    const document = await prisma.assetDocument.findFirst({
+      where: {
+        id: documentId,
+        userId
+      }
+    });
+
+    if (!document) {
+      return res.status(404).json({ error: "Документ не знайдено" });
+    }
+
+    if (document.mimeType !== "application/pdf") {
+      return res.status(400).json({ error: "Тільки PDF документи можна переобробити" });
+    }
+
+    if (!document.filePath || !fs.existsSync(document.filePath)) {
+      return res.status(404).json({ error: "Файл документа не знайдено на сервері" });
+    }
+
+    console.log(`Переобробка документа ID=${documentId}: ${document.fileName}`);
+
+    // Витягуємо текст
+    const text = await extractTextFromPDF(document.filePath);
+
+    // Оновлюємо документ
+    const updated = await prisma.assetDocument.update({
+      where: { id: documentId },
+      data: { text }
+    });
+
+    res.json({
+      ok: true,
+      message: "Документ переобробено",
+      hasText: !!text,
+      textLength: text ? text.length : 0
+    });
+  } catch (err) {
+    console.error("Reprocess document error:", err);
+    res.status(500).json({ error: "Помилка переобробки документа" });
+  }
+});
+
+// Переобробити ВСІ PDF документи користувача
+app.post("/api/documents/reprocess-all", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const documents = await prisma.assetDocument.findMany({
+      where: {
+        userId,
+        mimeType: "application/pdf"
+      }
+    });
+
+    console.log(`Переобробка ${documents.length} PDF документів користувача ${userId}`);
+
+    let processed = 0;
+    let withText = 0;
+    let errors = 0;
+
+    for (const doc of documents) {
+      try {
+        if (doc.filePath && fs.existsSync(doc.filePath)) {
+          const text = await extractTextFromPDF(doc.filePath);
+          await prisma.assetDocument.update({
+            where: { id: doc.id },
+            data: { text }
+          });
+          processed++;
+          if (text) withText++;
+        }
+      } catch (err) {
+        console.error(`Помилка переобробки документа ${doc.id}:`, err);
+        errors++;
+      }
+    }
+
+    res.json({
+      ok: true,
+      total: documents.length,
+      processed,
+      withText,
+      errors,
+      message: `Переобробано ${processed} з ${documents.length} документів. Текст витягнуто з ${withText}.`
+    });
+  } catch (err) {
+    console.error("Reprocess all documents error:", err);
+    res.status(500).json({ error: "Помилка переобробки документів" });
+  }
+});
+
 // Видалити документ
 app.delete("/api/documents/:documentId", authMiddleware, async (req, res) => {
   try {
@@ -653,15 +786,7 @@ app.post(
 
       let text = null;
       if (file.mimetype === "application/pdf") {
-        try {
-          const dataBuffer = await fs.promises.readFile(file.path);
-          const data = await pdfParse(dataBuffer);
-          text = data.text || null;
-          console.log(`PDF текст витягнуто: ${text ? text.length : 0} символів`);
-        } catch (pdfError) {
-          console.error("Помилка парсингу PDF:", pdfError);
-          // Продовжуємо без тексту
-        }
+        text = await extractTextFromPDF(file.path);
       }
 
       const doc = await prisma.assetDocument.create({

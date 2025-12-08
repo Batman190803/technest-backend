@@ -2,15 +2,14 @@
   "name": "technest-backend",
   "version": "1.0.0",
   "main": "index.js",
-"scripts": {
-  "start": "node index.js",
-  "render:start": "npm run prisma:deploy && node index.js",
-  "dev": "node index.js",
-  "prisma:deploy": "npx prisma db push --accept-data-loss",
-  "prisma:migrate": "npx prisma migrate dev --name init",
-  "prisma:generate": "npx prisma generate"
-},
-
+  "scripts": {
+    "start": "node index.js",
+    "render:start": "npm run prisma:deploy && node index.js",
+    "dev": "node index.js",
+    "prisma:deploy": "npx prisma db push --accept-data-loss",
+    "prisma:migrate": "npx prisma migrate dev --name init",
+    "prisma:generate": "npx prisma generate"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -28,6 +27,9 @@
     "nodemailer": "^7.0.11",
     "openai": "^6.10.0",
     "pdf-parse": "^2.4.5",
+    "pdf2json": "^4.0.0",
+    "pdfjs-dist": "^5.4.449",
+    "pdfkit": "^0.17.2",
     "prisma": "^6.19.0",
     "speakeasy": "^2.0.0"
   }
