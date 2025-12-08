@@ -1,25 +1,16 @@
-
 require("dotenv").config();
 console.log("SMTP_HOST =", process.env.SMTP_HOST);
 console.log("SMTP_PORT =", process.env.SMTP_PORT);
+
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-const { PrismaClient } = require("@prisma/client");
-
-const prisma = new PrismaClient();
-
-const PORT = process.env.PORT || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+const fs = require("fs");
 const multer = require("multer");
-const upload = multer({ dest: "uploads/" }); // тимчасова папка
-
 const pdfParse = require("pdf-parse");
-
-
-
+const { PrismaClient } = require("@prisma/client");
 
 const {
   generate2FACode,
@@ -27,102 +18,24 @@ const {
   send2FACodeEmail,
 } = require("./email2fa");
 
+const prisma = new PrismaClient();
 
-//const TWO_FA_SECRET = process.env.TWO_FA_SECRET || "dev_2fa_secret";
+const app = express();
+
+const PORT = process.env.PORT || 4000;
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+
+const upload = multer({ dest: "uploads/" }); // тимчасова папка
+
+app.use(cors());
+app.use(
+  express.json({
+    limit: "1mb", // достатньо під наші снапшоти
+  })
+);
 
 // ====== Налаштування шифрування ======
 const ENC_ALGO = "aes-256-gcm";
-
-const OpenAI = require("openai");
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-app.post("/api/ai/chat", authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { message } = req.body;
-
-    // 1) останні документи цього юзера
-    const docs = await prisma.assetDocument.findMany({
-      where: { userId, text: { not: null } },
-      take: 5, // напр., останні 5
-      orderBy: { createdAt: "desc" },
-    });
-
-    const docsContext = docs
-      .map(
-        (d) =>
-          `Документ: ${d.fileName}\n\n${(d.text || "").slice(0, 2000)}`
-      )
-      .join("\n\n----------------\n\n");
-
-    const systemPrompt =
-      "Ти асистент з технічного обслуговування для мобільного застосунку TechNest. " +
-      "Відповідай українською, коротко й по суті. " +
-      "Якщо можеш — посилайся на наведені нижче документи.\n\n" +
-      "Документи користувача:\n" +
-      (docsContext || "Документи ще не завантажені.");
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message },
-      ],
-      temperature: 0.2,
-    });
-
-    const reply =
-      completion.choices?.[0]?.message?.content ||
-      "Не вдалося отримати відповідь від моделі.";
-
-    res.json({ reply });
-  } catch (err) {
-    console.error("AI backend error:", err);
-    res.status(500).json({ error: "Помилка при зверненні до OpenAI" });
-  }
-});
-
-// POST /api/assets/:assetId/documents
-app.post(
-  "/api/assets/:assetId/documents",
-  authMiddleware,
-  upload.single("file"),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const assetId = req.params.assetId;
-      const file = req.file;
-
-      if (!file) {
-        return res.status(400).json({ error: "Файл не надійшов" });
-      }
-
-      // створюємо запис
-      let text = null;
-      if (file.mimetype === "application/pdf") {
-        const dataBuffer = fs.readFileSync(file.path);
-        const data = await pdfParse(dataBuffer);
-        text = data.text || null;
-      }
-
-      const doc = await prisma.assetDocument.create({
-        data: {
-          userId,
-          assetId,
-          fileName: file.originalname,
-          mimeType: file.mimetype,
-          text,
-        },
-      });
-
-      res.json({ ok: true, document: doc });
-    } catch (err) {
-      console.error("Upload document error:", err);
-      res.status(500).json({ error: "Помилка завантаження документа" });
-    }
-  }
-);
 
 // Ключ беремо як hex-рядок (64 символи) і конвертимо в Buffer
 let ENC_KEY = null;
@@ -190,14 +103,24 @@ function decryptJson(str) {
   }
 }
 
-const app = express();
+// ====== OpenAI ініціалізація ======
+let openai = null;
+try {
+  const OpenAI = require("openai");
 
-app.use(cors());
-app.use(
-  express.json({
-    limit: "1mb", // достатньо під наші снапшоти
-  })
-);
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn(
+      "[OPENAI] OPENAI_API_KEY is not set. /api/ai/chat буде недоступний."
+    );
+  } else {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    console.log("[OPENAI] клієнт ініціалізовано");
+  }
+} catch (e) {
+  console.error("[OPENAI] Помилка ініціалізації:", e);
+}
 
 // ====== хелпер для створення токена ======
 function signToken(user) {
@@ -207,8 +130,6 @@ function signToken(user) {
     { expiresIn: "7d" }
   );
 }
-
-
 
 // ====== middleware для захисту роутів ======
 function authMiddleware(req, res, next) {
@@ -272,7 +193,7 @@ app.post("/api/auth/register", async (req, res) => {
       },
     });
 
-    // Стандартні категорії, як було
+    // Стандартні категорії
     await prisma.assetCategory.createMany({
       data: [
         { title: "Комп'ютери", userId: user.id },
@@ -294,16 +215,13 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-
 // Логін
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res
-        .status(400)
-        .json({ error: "Вкажіть логін і пароль" });
+      return res.status(400).json({ error: "Вкажіть логін і пароль" });
     }
 
     const user = await prisma.user.findUnique({
@@ -311,19 +229,15 @@ app.post("/api/auth/login", async (req, res) => {
     });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({ error: "Невірний логін або пароль" });
+      return res.status(400).json({ error: "Невірний логін або пароль" });
     }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
-      return res
-        .status(400)
-        .json({ error: "Невірний логін або пароль" });
+      return res.status(400).json({ error: "Невірний логін або пароль" });
     }
 
-    // 🔹 Тимчасово: старі акаунти без email заходять без 2FA
+    // Старі акаунти без email заходять без 2FA
     if (!user.email) {
       const token = signToken(user);
       return res.json({
@@ -333,14 +247,11 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    // 🔹 Нові акаунти з email — логін через 2FA по пошті
-
-    // 1) Генеруємо код
+    // Нові акаунти з email — логін через 2FA по пошті
     const code = generate2FACode();
     const codeHash = hashCode(code);
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 хв
 
-    // 2) Зберігаємо код у юзера
     await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -350,10 +261,8 @@ app.post("/api/auth/login", async (req, res) => {
       },
     });
 
-    // 3) Шлемо код на пошту
     await send2FACodeEmail(user.email, code);
 
-    // 4) Видаємо тимчасовий токен 2FA
     const twofaToken = jwt.sign(
       {
         userId: user.id,
@@ -373,21 +282,17 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
- 
-
 app.post("/api/auth/verify-email-2fa", async (req, res) => {
   try {
     const { twofaToken, code } = req.body;
 
     if (!twofaToken || !code) {
-      return res
-        .status(400)
-        .json({ error: "Немає токена або коду" });
+      return res.status(400).json({ error: "Немає токена або коду" });
     }
 
     let payload;
     try {
-      payload = jwt.verify(twofaToken, JWT_SECRET); // або TWO_FA_SECRET
+      payload = jwt.verify(twofaToken, JWT_SECRET);
     } catch (e) {
       console.error("2FA token verify error", e);
       return res
@@ -403,9 +308,7 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
     }
 
     if (!user.twoFaCodeHash || !user.twoFaCodeExpiresAt) {
-      return res
-        .status(400)
-        .json({ error: "2FA код не збережений" });
+      return res.status(400).json({ error: "2FA код не збережений" });
     }
 
     const now = new Date();
@@ -422,13 +325,11 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
       return res.status(400).json({ error: "Невірний код" });
     }
 
-    // Позначаємо код як використаний
     await prisma.user.update({
       where: { id: user.id },
       data: { twoFaCodeUsed: true },
     });
 
-    // ТЕПЕР видаємо нормальний JWT, як раніше
     const finalToken = signToken(user);
 
     return res.json({
@@ -441,6 +342,99 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+// ====== AI ЧАТ ======
+app.post("/api/ai/chat", authMiddleware, async (req, res) => {
+  try {
+    if (!openai) {
+      return res
+        .status(500)
+        .json({ error: "AI модуль не налаштований на сервері" });
+    }
+
+    const userId = req.user.userId;
+    const { message } = req.body;
+
+    // останні документи цього юзера
+    const docs = await prisma.assetDocument.findMany({
+      where: { userId, text: { not: null } },
+      take: 5,
+      orderBy: { createdAt: "desc" },
+    });
+
+    const docsContext = docs
+      .map(
+        (d) =>
+          `Документ: ${d.fileName}\n\n${(d.text || "").slice(0, 2000)}`
+      )
+      .join("\n\n----------------\n\n");
+
+    const systemPrompt =
+      "Ти асистент з технічного обслуговування для мобільного застосунку TechNest. " +
+      "Відповідай українською, коротко й по суті. " +
+      "Якщо можеш — посилайся на наведені нижче документи.\n\n" +
+      "Документи користувача:\n" +
+      (docsContext || "Документи ще не завантажені.");
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+      temperature: 0.2,
+    });
+
+    const reply =
+      completion.choices?.[0]?.message?.content ||
+      "Не вдалося отримати відповідь від моделі.";
+
+    res.json({ reply });
+  } catch (err) {
+    console.error("AI backend error:", err);
+    res.status(500).json({ error: "Помилка при зверненні до OpenAI" });
+  }
+});
+
+// ====== ЗАВАНТАЖЕННЯ ДОКУМЕНТІВ ДЛЯ АКТИВІВ ======
+app.post(
+  "/api/assets/:assetId/documents",
+  authMiddleware,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const assetId = req.params.assetId;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json({ error: "Файл не надійшов" });
+      }
+
+      let text = null;
+      if (file.mimetype === "application/pdf") {
+        const dataBuffer = fs.readFileSync(file.path);
+        const data = await pdfParse(dataBuffer);
+        text = data.text || null;
+      }
+
+      const doc = await prisma.assetDocument.create({
+        data: {
+          userId,
+          assetId,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          text,
+        },
+      });
+
+      res.json({ ok: true, document: doc });
+    } catch (err) {
+      console.error("Upload document error:", err);
+      res.status(500).json({ error: "Помилка завантаження документа" });
+    }
+  }
+);
 
 // ====== АКТИВИ ======
 
@@ -570,6 +564,95 @@ app.put("/api/assets/items/:id", authMiddleware, async (req, res) => {
     res.json(updated);
   } catch (e) {
     console.error("Update asset error", e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ==== СТАН АКТИВІВ (JSON снапшот) ====
+
+// Отримати стан
+app.get("/api/assets/state", authMiddleware, async (req, res) => {
+  const userId = req.user.userId;
+
+  console.log("GET /api/assets/state for userId =", userId);
+
+  try {
+    const snapshot = await prisma.assetSnapshot.findUnique({
+      where: { userId },
+    });
+
+    let assetCategories = [];
+    if (snapshot && snapshot.data) {
+      try {
+        assetCategories = decryptJson(snapshot.data);
+        console.log(
+          "Found snapshot for userId =",
+          userId,
+          "categories length =",
+          Array.isArray(assetCategories)
+            ? assetCategories.length
+            : "not array"
+        );
+      } catch (e) {
+        console.error("Decrypt assetSnapshot.data error", e);
+      }
+    } else {
+      console.log("No snapshot for userId =", userId);
+    }
+
+    res.json({ assetCategories });
+  } catch (e) {
+    console.error("Assets get state error", e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Зберегти стан
+app.post("/api/assets/state", authMiddleware, async (req, res) => {
+  const userId = req.user.userId;
+  const { assetCategories } = req.body;
+
+  console.log(
+    "PROTECT POST /api/assets/state for userId =",
+    userId,
+    "categories length =",
+    Array.isArray(assetCategories) ? assetCategories.length : "not array"
+  );
+
+  if (!Array.isArray(assetCategories)) {
+    return res
+      .status(400)
+      .json({ error: "assetCategories має бути масивом" });
+  }
+
+  if (assetCategories.length === 0) {
+    console.log(
+      "Skip saving EMPTY snapshot for userId =",
+      userId,
+      "(leave previous data unchanged)"
+    );
+    return res.json({ ok: true, skipped: true });
+  }
+
+  try {
+    const data = encryptJson(assetCategories);
+
+    const snapshot = await prisma.assetSnapshot.upsert({
+      where: { userId },
+      update: { data },
+      create: { userId, data },
+    });
+
+    console.log(
+      "Saved NON-EMPTY snapshot for userId =",
+      userId,
+      "bytes =",
+      data.length
+    );
+
+    res.json({ ok: true, updatedAt: snapshot.updatedAt });
+  } catch (e) {
+    console.error("Assets save state error", e);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -704,95 +787,6 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error("Admin delete user error", e);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ==== СТАН АКТИВІВ (JSON снапшот) ====
-
-// Отримати стан
-app.get("/api/assets/state", authMiddleware, async (req, res) => {
-  const userId = req.user.userId;
-
-  console.log("GET /api/assets/state for userId =", userId);
-
-  try {
-    const snapshot = await prisma.assetSnapshot.findUnique({
-      where: { userId },
-    });
-
-    let assetCategories = [];
-    if (snapshot && snapshot.data) {
-      try {
-        assetCategories = decryptJson(snapshot.data);
-        console.log(
-          "Found snapshot for userId =",
-          userId,
-          "categories length =",
-          Array.isArray(assetCategories)
-            ? assetCategories.length
-            : "not array"
-        );
-      } catch (e) {
-        console.error("Decrypt assetSnapshot.data error", e);
-      }
-    } else {
-      console.log("No snapshot for userId =", userId);
-    }
-
-    res.json({ assetCategories });
-  } catch (e) {
-    console.error("Assets get state error", e);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// Зберегти стан
-app.post("/api/assets/state", authMiddleware, async (req, res) => {
-  const userId = req.user.userId;
-  const { assetCategories } = req.body;
-
-  console.log(
-    "PROTECT POST /api/assets/state for userId =",
-    userId,
-    "categories length =",
-    Array.isArray(assetCategories) ? assetCategories.length : "not array"
-  );
-
-  if (!Array.isArray(assetCategories)) {
-    return res
-      .status(400)
-      .json({ error: "assetCategories має бути масивом" });
-  }
-
-  if (assetCategories.length === 0) {
-    console.log(
-      "Skip saving EMPTY snapshot for userId =",
-      userId,
-      "(leave previous data unchanged)"
-    );
-    return res.json({ ok: true, skipped: true });
-  }
-
-  try {
-    const data = encryptJson(assetCategories);
-
-    const snapshot = await prisma.assetSnapshot.upsert({
-      where: { userId },
-      update: { data },
-      create: { userId, data },
-    });
-
-    console.log(
-      "Saved NON-EMPTY snapshot for userId =",
-      userId,
-      "bytes =",
-      data.length
-    );
-
-    res.json({ ok: true, updatedAt: snapshot.updatedAt });
-  } catch (e) {
-    console.error("Assets save state error", e);
     res.status(500).json({ error: "Server error" });
   }
 });
