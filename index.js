@@ -508,31 +508,32 @@ ${textPreview}
     const docsWithText = docs.filter(d => d.text && d.text.trim().length > 0).length;
 
     let assetsContext = "";
-    if (categories.length > 0) {
-      // Статистика
-      assetsContext = `\n\n=== СТАТИСТИКА КОРИСТУВАЧА ===
+    // Завжди показуємо статистику, навіть якщо немає активів
+    assetsContext = `\n\n=== СТАТИСТИКА КОРИСТУВАЧА ===
 Всього категорій обладнання: ${categories.length}
 Всього одиниць обладнання: ${totalAssets}
 Завантажено документів: ${docs.length}
 Документів з розпізнаним текстом: ${docsWithText}
 `;
 
-      // Детальний список активів
-      if (totalAssets > 0) {
-        assetsContext += "\n=== ВАШЕ ОБЛАДНАННЯ ===\n";
-        categories.forEach(cat => {
-          if (cat.assets.length > 0) {
-            assetsContext += `\n${cat.title} (${cat.assets.length} од.):\n`;
-            cat.assets.forEach(asset => {
-              assetsContext += `  - ${asset.name} (Інв.№ ${asset.inventoryNumber})`;
-              if (asset.model) assetsContext += ` | Модель: ${asset.model}`;
-              if (asset.room) assetsContext += ` | Кімната: ${asset.room}`;
-              if (asset.responsible) assetsContext += ` | Відповідальний: ${asset.responsible}`;
-              assetsContext += '\n';
-            });
-          }
-        });
-      }
+    // Детальний список активів
+    if (totalAssets > 0) {
+      assetsContext += "\n=== ВАШЕ ОБЛАДНАННЯ ===\n";
+      categories.forEach(cat => {
+        if (cat.assets.length > 0) {
+          assetsContext += `\n${cat.title} (${cat.assets.length} од.):\n`;
+          cat.assets.forEach(asset => {
+            assetsContext += `  - ${asset.name} (Інв.№ ${asset.inventoryNumber})`;
+            if (asset.model) assetsContext += ` | Модель: ${asset.model}`;
+            if (asset.room) assetsContext += ` | Кімната: ${asset.room}`;
+            if (asset.responsible) assetsContext += ` | Відповідальний: ${asset.responsible}`;
+            assetsContext += '\n';
+          });
+        }
+      });
+    } else {
+      assetsContext += "\n⚠️ У вас ще немає створених активів обладнання.\n";
+      assetsContext += "Створіть активи через мобільний додаток, щоб AI міг надавати рекомендації з їх обслуговування.\n";
     }
 
     // 4) Формуємо системний промпт
