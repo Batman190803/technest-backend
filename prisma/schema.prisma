@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"    
   url      = env("DATABASE_URL")
 }
 
@@ -22,7 +22,7 @@ model AssetSnapshot {
   id           Int      @id @default(autoincrement())
   user         User     @relation(fields: [userId], references: [id])
   userId       Int
-  jsonPayload  String   // тут уже є
+  jsonPayload  String
   createdAt    DateTime @default(now())
 }
 
@@ -30,11 +30,10 @@ model AssetDocument {
   id        Int      @id @default(autoincrement())
   user      User     @relation(fields: [userId], references: [id])
   userId    Int
-
-  assetId   String   // id активу з мобілки (AssetItem.id)
+  assetId   String
   fileName  String
   mimeType  String
-  text      String?  // витягнутий текст PDF
+  text      String?
   createdAt DateTime @default(now())
 }
 
@@ -42,7 +41,6 @@ model ChatMessage {
   id        Int      @id @default(autoincrement())
   user      User     @relation(fields: [userId], references: [id])
   userId    Int
-
   role      String   // 'user' | 'assistant'
   content   String
   createdAt DateTime @default(now())
