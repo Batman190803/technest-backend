@@ -3,34 +3,78 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"    
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id           Int      @id @default(autoincrement())
-  username     String   @unique
+  id           Int     @id @default(autoincrement())
+  username     String  @unique
   passwordHash String
-  role         String   @default("user")
+  email        String? @unique
+  role         String  @default("user")
 
-  assetSnapshots AssetSnapshot[]
-  documents      AssetDocument[]
-  chatMessages   ChatMessage[]
+  // 2FA по email
+  twoFaCodeHash      String?
+  twoFaCodeExpiresAt DateTime?
+  twoFaCodeUsed      Boolean   @default(false)
+
+  // Зв’язки
+  assetCategories AssetCategory[]
+  assetSnapshot   AssetSnapshot?
+  documents       AssetDocument[]
+  chatMessages    ChatMessage[]
+}
+
+model AssetCategory {
+  id     Int    @id @default(autoincrement())
+  title  String
+  userId Int
+  user   User   @relation(fields: [userId], references: [id])
+
+  assets Asset[]
+}
+
+model Asset {
+  id         Int           @id @default(autoincrement())
+  categoryId Int
+  category   AssetCategory @relation(fields: [categoryId], references: [id])
+
+  name            String
+  inventoryNumber String
+
+  model        String?
+  serialNumber String?
+  status       String?
+  room         String?
+  responsible  String?
+  phone        String?
+  groupName    String?
+  comments     String?
+  qrCode       String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model AssetSnapshot {
-  id           Int      @id @default(autoincrement())
-  user         User     @relation(fields: [userId], references: [id])
-  userId       Int
-  jsonPayload  String
-  createdAt    DateTime @default(now())
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id])
+
+  // Зашифрований JSON снапшоту
+  data String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model AssetDocument {
-  id        Int      @id @default(autoincrement())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    Int
-  assetId   String
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  assetId   String // AssetItem.id з мобілки
   fileName  String
   mimeType  String
   text      String?
@@ -38,10 +82,11 @@ model AssetDocument {
 }
 
 model ChatMessage {
-  id        Int      @id @default(autoincrement())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    Int
-  role      String   // 'user' | 'assistant'
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  role      String // 'user' | 'assistant'
   content   String
   createdAt DateTime @default(now())
 }
