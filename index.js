@@ -343,48 +343,44 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
   }
 });
 
+app.get("/api/debug/docs", authMiddleware, async (req, res) => {
+  const userId = req.user.userId;
+  const docs = await prisma.assetDocument.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ count: docs.length, docs });
+});
+
 // ====== AI ЧАТ ======
 app.post("/api/ai/chat", authMiddleware, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId;         // ✅ беремо userId з JWT
     const { message } = req.body;
 
     console.log("AI CHAT for userId =", userId);
 
-    // 1) Беремо останні 5 документів БЕЗ фільтра text: { not: null }
+    // 1) останні документи цього юзера БЕЗ фільтра по text
     const docs = await prisma.assetDocument.findMany({
       where: { userId },
       take: 5,
       orderBy: { createdAt: "desc" },
     });
 
-    console.log(
-      "AI CHAT docs found:",
-      docs.map((d) => ({
-        id: d.id,
-        userId: d.userId,
-        fileName: d.fileName,
-        mimeType: d.mimeType,
-        hasText: !!d.text,
-        textLen: d.text ? d.text.length : 0,
-      }))
-    );
+    console.log("AI CHAT docs found:", docs);
 
-    const docsContext =
-      docs.length === 0
-        ? "Документи ще не завантажені."
-        : docs
-            .map((d) => {
-              const header = `Документ: ${d.fileName} (${d.mimeType})`;
-              if (!d.text) {
-                return (
-                  header +
-                  "\n(Текст із файлу не вдалося автоматично витягнути — можливо, це скан або зображення без тексту)."
-                );
-              }
-              return header + "\n\n" + d.text.slice(0, 2000);
-            })
-            .join("\n\n----------------\n\n");
+    const docsContext = docs.length
+      ? docs
+          .map((d) => {
+            const preview =
+              d.text && d.text.trim()
+                ? d.text.slice(0, 2000)
+                : "[Текст документа не розпізнано або файл ще не оброблено.]";
+
+            return `Документ: ${d.fileName}\n\n${preview}`;
+          })
+          .join("\n\n----------------\n\n")
+      : "Документи ще не завантажені або не оброблені.";
 
     const systemPrompt =
       "Ти асистент з технічного обслуговування для мобільного застосунку TechNest. " +
@@ -412,6 +408,7 @@ app.post("/api/ai/chat", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Помилка при зверненні до OpenAI" });
   }
 });
+
 
 
 
