@@ -490,45 +490,70 @@ ${textPreview}
         : "У вас ще немає завантажених документів.";
     }
 
-    // 3) Отримуємо інформацію про активи (опціонально)
+    // 3) Отримуємо інформацію про активи
     const categories = await prisma.assetCategory.findMany({
       where: { userId },
-      include: { assets: true },
-      take: 5, // Обмежуємо для економії токенів
+      include: {
+        assets: true,
+        _count: {
+          select: { assets: true }
+        }
+      },
     });
 
+    // Підраховуємо загальну кількість активів
+    const totalAssets = categories.reduce((sum, cat) => sum + cat.assets.length, 0);
+
+    // Підраховуємо документи з текстом
+    const docsWithText = docs.filter(d => d.text && d.text.trim().length > 0).length;
+
     let assetsContext = "";
-    if (categories.length > 0 && categories.some(c => c.assets.length > 0)) {
-      assetsContext = "\n\nВаші активи:\n";
-      categories.forEach(cat => {
-        if (cat.assets.length > 0) {
-          assetsContext += `\n${cat.title}:\n`;
-          cat.assets.slice(0, 5).forEach(asset => {
-            assetsContext += `  - ${asset.name} (Інв.№ ${asset.inventoryNumber})`;
-            if (asset.model) assetsContext += ` - ${asset.model}`;
-            if (asset.room) assetsContext += ` | Кімната: ${asset.room}`;
-            assetsContext += '\n';
-          });
-        }
-      });
+    if (categories.length > 0) {
+      // Статистика
+      assetsContext = `\n\n=== СТАТИСТИКА КОРИСТУВАЧА ===
+Всього категорій обладнання: ${categories.length}
+Всього одиниць обладнання: ${totalAssets}
+Завантажено документів: ${docs.length}
+Документів з розпізнаним текстом: ${docsWithText}
+`;
+
+      // Детальний список активів
+      if (totalAssets > 0) {
+        assetsContext += "\n=== ВАШЕ ОБЛАДНАННЯ ===\n";
+        categories.forEach(cat => {
+          if (cat.assets.length > 0) {
+            assetsContext += `\n${cat.title} (${cat.assets.length} од.):\n`;
+            cat.assets.forEach(asset => {
+              assetsContext += `  - ${asset.name} (Інв.№ ${asset.inventoryNumber})`;
+              if (asset.model) assetsContext += ` | Модель: ${asset.model}`;
+              if (asset.room) assetsContext += ` | Кімната: ${asset.room}`;
+              if (asset.responsible) assetsContext += ` | Відповідальний: ${asset.responsible}`;
+              assetsContext += '\n';
+            });
+          }
+        });
+      }
     }
 
     // 4) Формуємо системний промпт
     const systemPrompt = `Ти — AI асистент з технічного обслуговування для мобільного додатку TechNest.
 
-ВАЖЛИВО:
+ВАЖЛИВІ ПРАВИЛА:
 - Відповідай ТІЛЬКИ українською мовою
 - Будь конкретним і корисним
-- Якщо питання стосується документів - обов'язково посилайся на них
-- Якщо в документах є технічні характеристики, інструкції або специфікації - використовуй їх
+- Використовуй ТІЛЬКИ інформацію з наведених нижче документів та активів
+- Якщо питання стосується кількості - використовуй СТАТИСТИКУ
+- Якщо питання стосується документів - посилайся на конкретні документи
+- Якщо в документах є технічні характеристики, інструкції або специфікації - цитуй їх
 - Допомагай з питаннями обслуговування, ремонту, налаштування обладнання
-- Якщо інформації немає в документах - так і скажи
+- Якщо інформації немає в документах або статистиці - чесно скажи про це
+
+${assetsContext}
 
 ДОСТУПНІ ДОКУМЕНТИ:
 ${docsContext}
-${assetsContext}
 
-Тепер дай відповідь на запитання користувача, використовуючи інформацію з наведених документів та активів.`;
+Тепер дай відповідь на запитання користувача, використовуючи ТІЛЬКИ наведену вище інформацію.`;
 
     // 5) Викликаємо OpenAI
     const completion = await openai.chat.completions.create({
@@ -549,7 +574,12 @@ ${assetsContext}
 
     res.json({
       reply,
-      documentsUsed: docs.length,
+      stats: {
+        documentsTotal: docs.length,
+        documentsWithText: docsWithText,
+        categoriesCount: categories.length,
+        assetsCount: totalAssets
+      },
       hasAssetContext: !!assetId
     });
   } catch (err) {
