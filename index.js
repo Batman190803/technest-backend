@@ -346,16 +346,14 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
 // ====== AI ЧАТ ======
 app.post("/api/ai/chat", authMiddleware, async (req, res) => {
   try {
-    if (!openai) {
-      return res
-        .status(500)
-        .json({ error: "AI модуль не налаштований на сервері" });
-    }
+    // БУЛО:
+    // const userId = req.user.id;
 
+    // ПРАВИЛЬНО:
     const userId = req.user.userId;
+
     const { message } = req.body;
 
-    // останні документи цього юзера
     const docs = await prisma.assetDocument.findMany({
       where: { userId, text: { not: null } },
       take: 5,
@@ -395,6 +393,7 @@ app.post("/api/ai/chat", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Помилка при зверненні до OpenAI" });
   }
 });
+
 
 // ====== ЗАВАНТАЖЕННЯ ДОКУМЕНТІВ ДЛЯ АКТИВІВ ======
 app.post(
