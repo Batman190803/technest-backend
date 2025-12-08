@@ -416,13 +416,24 @@ app.post(
   upload.single("file"),
   async (req, res) => {
     try {
-      const userId = req.user.userId;
+      // 🔧 БУЛО: const userId = req.user.id;
+      const userId = req.user.userId;  // ✅ БЕРЕМО userId з JWT payload
+
       const assetId = req.params.assetId;
       const file = req.file;
 
       if (!file) {
         return res.status(400).json({ error: "Файл не надійшов" });
       }
+
+      // Опціонально: лог, щоб бачити, хто і що вантажить
+      console.log("UPLOAD DOCUMENT:", {
+        userId,
+        assetId,
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+      });
 
       let text = null;
       if (file.mimetype === "application/pdf") {
@@ -441,6 +452,14 @@ app.post(
         },
       });
 
+      console.log("DOCUMENT SAVED:", {
+        id: doc.id,
+        userId: doc.userId,
+        assetId: doc.assetId,
+        fileName: doc.fileName,
+        hasText: !!doc.text,
+      });
+
       res.json({ ok: true, document: doc });
     } catch (err) {
       console.error("Upload document error:", err);
@@ -448,6 +467,7 @@ app.post(
     }
   }
 );
+
 
 // ====== АКТИВИ ======
 
