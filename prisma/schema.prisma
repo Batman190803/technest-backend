@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -12,49 +12,38 @@ model User {
   username     String   @unique
   passwordHash String
   role         String   @default("user")
-  createdAt    DateTime @default(now())
 
-  email              String?         @unique // e-mail (може бути null для старих юзерів)
-  twoFaCodeHash      String? // хеш 2FA коду
-  twoFaCodeExpiresAt DateTime? // доки дійсний код
-  twoFaCodeUsed      Boolean         @default(false)
-  assetCategories    AssetCategory[]
-  assetSnapshot      AssetSnapshot?
-}
-
-model AssetCategory {
-  id     Int    @id @default(autoincrement())
-  title  String
-  user   User   @relation(fields: [userId], references: [id])
-  userId Int
-
-  assets Asset[]
-}
-
-model Asset {
-  id              Int     @id @default(autoincrement())
-  name            String
-  inventoryNumber String
-  model           String?
-  serialNumber    String?
-  status          String?
-  room            String?
-  responsible     String?
-  phone           String?
-  groupName       String?
-  comments        String?
-  qrCode          String? @unique
-
-  category   AssetCategory @relation(fields: [categoryId], references: [id])
-  categoryId Int
-
-  createdAt DateTime @default(now())
+  assetSnapshots AssetSnapshot[]
+  documents      AssetDocument[]
+  chatMessages   ChatMessage[]
 }
 
 model AssetSnapshot {
+  id           Int      @id @default(autoincrement())
+  user         User     @relation(fields: [userId], references: [id])
+  userId       Int
+  jsonPayload  String   // тут уже є
+  createdAt    DateTime @default(now())
+}
+
+model AssetDocument {
   id        Int      @id @default(autoincrement())
-  userId    Int      @unique
   user      User     @relation(fields: [userId], references: [id])
-  data      String // JSON з assetCategories
-  updatedAt DateTime @updatedAt
+  userId    Int
+
+  assetId   String   // id активу з мобілки (AssetItem.id)
+  fileName  String
+  mimeType  String
+  text      String?  // витягнутий текст PDF
+  createdAt DateTime @default(now())
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    Int
+
+  role      String   // 'user' | 'assistant'
+  content   String
+  createdAt DateTime @default(now())
 }

@@ -13,6 +13,13 @@ const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+const multer = require("multer");
+const upload = multer({ dest: "uploads/" }); // тимчасова папка
+
+const pdfParse = require("pdf-parse");
+
+
+
 
 const {
   generate2FACode,
@@ -25,6 +32,97 @@ const {
 
 // ====== Налаштування шифрування ======
 const ENC_ALGO = "aes-256-gcm";
+
+const OpenAI = require("openai");
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+app.post("/api/ai/chat", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { message } = req.body;
+
+    // 1) останні документи цього юзера
+    const docs = await prisma.assetDocument.findMany({
+      where: { userId, text: { not: null } },
+      take: 5, // напр., останні 5
+      orderBy: { createdAt: "desc" },
+    });
+
+    const docsContext = docs
+      .map(
+        (d) =>
+          `Документ: ${d.fileName}\n\n${(d.text || "").slice(0, 2000)}`
+      )
+      .join("\n\n----------------\n\n");
+
+    const systemPrompt =
+      "Ти асистент з технічного обслуговування для мобільного застосунку TechNest. " +
+      "Відповідай українською, коротко й по суті. " +
+      "Якщо можеш — посилайся на наведені нижче документи.\n\n" +
+      "Документи користувача:\n" +
+      (docsContext || "Документи ще не завантажені.");
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+      temperature: 0.2,
+    });
+
+    const reply =
+      completion.choices?.[0]?.message?.content ||
+      "Не вдалося отримати відповідь від моделі.";
+
+    res.json({ reply });
+  } catch (err) {
+    console.error("AI backend error:", err);
+    res.status(500).json({ error: "Помилка при зверненні до OpenAI" });
+  }
+});
+
+// POST /api/assets/:assetId/documents
+app.post(
+  "/api/assets/:assetId/documents",
+  authMiddleware,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const assetId = req.params.assetId;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json({ error: "Файл не надійшов" });
+      }
+
+      // створюємо запис
+      let text = null;
+      if (file.mimetype === "application/pdf") {
+        const dataBuffer = fs.readFileSync(file.path);
+        const data = await pdfParse(dataBuffer);
+        text = data.text || null;
+      }
+
+      const doc = await prisma.assetDocument.create({
+        data: {
+          userId,
+          assetId,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          text,
+        },
+      });
+
+      res.json({ ok: true, document: doc });
+    } catch (err) {
+      console.error("Upload document error:", err);
+      res.status(500).json({ error: "Помилка завантаження документа" });
+    }
+  }
+);
 
 // Ключ беремо як hex-рядок (64 символи) і конвертимо в Buffer
 let ENC_KEY = null;
