@@ -346,25 +346,39 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
 // ====== AI ЧАТ ======
 app.post("/api/ai/chat", authMiddleware, async (req, res) => {
   try {
-    // БУЛО:
-    // const userId = req.user.id;
-
-    // ПРАВИЛЬНО:
+    // ⚠️ ВАЖЛИВО: беремо userId саме з JWT-пейлоада
     const userId = req.user.userId;
-
     const { message } = req.body;
 
+    console.log("AI CHAT for userId =", userId);
+
+    // 1) Тягнемо останні документи цього юзера (без фільтру по text)
     const docs = await prisma.assetDocument.findMany({
-      where: { userId, text: { not: null } },
+      where: { userId },
       take: 5,
       orderBy: { createdAt: "desc" },
     });
 
+    console.log(
+      "AI CHAT docs found:",
+      docs.map((d) => ({
+        id: d.id,
+        userId: d.userId,
+        fileName: d.fileName,
+        mimeType: d.mimeType,
+        hasText: !!d.text,
+        textLen: d.text ? d.text.length : 0,
+      }))
+    );
+
     const docsContext = docs
-      .map(
-        (d) =>
-          `Документ: ${d.fileName}\n\n${(d.text || "").slice(0, 2000)}`
-      )
+      .map((d) => {
+        const preview = (d.text || "").slice(0, 2000);
+        return (
+          `Документ: ${d.fileName}\n\n` +
+          (preview || "[Текст не витягнутий з PDF або файл не PDF]")
+        );
+      })
       .join("\n\n----------------\n\n");
 
     const systemPrompt =
