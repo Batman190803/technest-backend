@@ -72,13 +72,18 @@ model AssetSnapshot {
 model AssetDocument {
   id     Int  @id @default(autoincrement())
   userId Int
-  user   User @relation(fields: [userId], references: [id])
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   assetId   String // AssetItem.id з мобілки
   fileName  String
   mimeType  String
-  text      String?
+  filePath  String? // Шлях до збереженого файлу
+  fileSize  Int? // Розмір файлу в байтах
+  text      String? @db.Text // Витягнутий текст з PDF
   createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([assetId])
 }
 
 model ChatMessage {

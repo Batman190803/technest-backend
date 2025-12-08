@@ -3,3 +3,11 @@ node_modules
 .env
 
 /generated/prisma
+
+# Uploaded documents and files
+documents/
+uploads/
+
+# Database files
+*.db
+*.db-journal

@@ -25,7 +25,49 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
-const upload = multer({ dest: "uploads/" }); // тимчасова папка
+const path = require("path");
+
+// Створюємо постійну папку для документів
+const DOCUMENTS_DIR = path.join(__dirname, "documents");
+if (!fs.existsSync(DOCUMENTS_DIR)) {
+  fs.mkdirSync(DOCUMENTS_DIR, { recursive: true });
+}
+
+// Налаштування multer для постійного зберігання
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, DOCUMENTS_DIR);
+  },
+  filename: (req, file, cb) => {
+    // Унікальне ім'я: timestamp-userId-assetId-originalName
+    const userId = req.user?.userId || "unknown";
+    const assetId = req.params.assetId || "unknown";
+    const timestamp = Date.now();
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_");
+    cb(null, `${timestamp}-${userId}-${assetId}-${safeName}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB ліміт
+  fileFilter: (req, file, cb) => {
+    // Дозволені типи файлів
+    const allowedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Непідтримуваний тип файлу. Дозволені: PDF, JPEG, PNG, DOC, DOCX'));
+    }
+  }
+});
 
 app.use(cors());
 app.use(
@@ -355,62 +397,235 @@ app.get("/api/debug/docs", authMiddleware, async (req, res) => {
 // ====== AI ЧАТ ======
 app.post("/api/ai/chat", authMiddleware, async (req, res) => {
   try {
-    const userId = req.user.userId;         // ✅ беремо userId з JWT
-    const { message } = req.body;
+    const userId = req.user.userId;
+    const { message, assetId } = req.body; // Додаємо опціональний assetId
 
-    console.log("AI CHAT for userId =", userId);
+    if (!message) {
+      return res.status(400).json({ error: "Повідомлення не може бути порожнім" });
+    }
 
-    // 1) останні документи цього юзера БЕЗ фільтра по text
-    const docs = await prisma.assetDocument.findMany({
+    console.log("AI CHAT for userId =", userId, "assetId =", assetId || "all");
+
+    // 1) Отримуємо документи
+    let docs;
+    if (assetId) {
+      // Якщо вказано assetId - беремо тільки документи цього активу
+      docs = await prisma.assetDocument.findMany({
+        where: {
+          userId,
+          assetId: assetId.toString()
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      console.log(`Знайдено ${docs.length} документів для активу ${assetId}`);
+    } else {
+      // Інакше - беремо всі останні документи користувача
+      docs = await prisma.assetDocument.findMany({
+        where: { userId },
+        take: 10, // Збільшуємо до 10 документів
+        orderBy: { createdAt: "desc" },
+      });
+      console.log(`Знайдено ${docs.length} документів користувача`);
+    }
+
+    // 2) Формуємо контекст з документів
+    let docsContext = "";
+    if (docs.length > 0) {
+      const docDescriptions = docs.map((d, index) => {
+        const textPreview = d.text && d.text.trim()
+          ? d.text.slice(0, 3000) // Збільшуємо до 3000 символів
+          : "[Текст не було витягнуто з цього документа]";
+
+        return `
+📄 Документ ${index + 1}: ${d.fileName}
+   Тип: ${d.mimeType}
+   Розмір: ${d.fileSize ? (d.fileSize / 1024).toFixed(2) + ' KB' : 'невідомо'}
+   Дата завантаження: ${new Date(d.createdAt).toLocaleDateString('uk-UA')}
+
+Зміст документа:
+${textPreview}
+`;
+      });
+
+      docsContext = docDescriptions.join("\n" + "=".repeat(80) + "\n");
+    } else {
+      docsContext = assetId
+        ? "Для цього активу ще не завантажено жодного документа."
+        : "У вас ще немає завантажених документів.";
+    }
+
+    // 3) Отримуємо інформацію про активи (опціонально)
+    const categories = await prisma.assetCategory.findMany({
       where: { userId },
-      take: 5,
-      orderBy: { createdAt: "desc" },
+      include: { assets: true },
+      take: 5, // Обмежуємо для економії токенів
     });
 
-    console.log("AI CHAT docs found:", docs);
+    let assetsContext = "";
+    if (categories.length > 0 && categories.some(c => c.assets.length > 0)) {
+      assetsContext = "\n\nВаші активи:\n";
+      categories.forEach(cat => {
+        if (cat.assets.length > 0) {
+          assetsContext += `\n${cat.title}:\n`;
+          cat.assets.slice(0, 5).forEach(asset => {
+            assetsContext += `  - ${asset.name} (Інв.№ ${asset.inventoryNumber})`;
+            if (asset.model) assetsContext += ` - ${asset.model}`;
+            if (asset.room) assetsContext += ` | Кімната: ${asset.room}`;
+            assetsContext += '\n';
+          });
+        }
+      });
+    }
 
-    const docsContext = docs.length
-      ? docs
-          .map((d) => {
-            const preview =
-              d.text && d.text.trim()
-                ? d.text.slice(0, 2000)
-                : "[Текст документа не розпізнано або файл ще не оброблено.]";
+    // 4) Формуємо системний промпт
+    const systemPrompt = `Ти — AI асистент з технічного обслуговування для мобільного додатку TechNest.
 
-            return `Документ: ${d.fileName}\n\n${preview}`;
-          })
-          .join("\n\n----------------\n\n")
-      : "Документи ще не завантажені або не оброблені.";
+ВАЖЛИВО:
+- Відповідай ТІЛЬКИ українською мовою
+- Будь конкретним і корисним
+- Якщо питання стосується документів - обов'язково посилайся на них
+- Якщо в документах є технічні характеристики, інструкції або специфікації - використовуй їх
+- Допомагай з питаннями обслуговування, ремонту, налаштування обладнання
+- Якщо інформації немає в документах - так і скажи
 
-    const systemPrompt =
-      "Ти асистент з технічного обслуговування для мобільного застосунку TechNest. " +
-      "Відповідай українською, коротко й по суті. " +
-      "Якщо можеш — посилайся на наведені нижче документи.\n\n" +
-      "Документи користувача:\n" +
-      docsContext;
+ДОСТУПНІ ДОКУМЕНТИ:
+${docsContext}
+${assetsContext}
 
+Тепер дай відповідь на запитання користувача, використовуючи інформацію з наведених документів та активів.`;
+
+    // 5) Викликаємо OpenAI
     const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: message },
       ],
-      temperature: 0.2,
+      temperature: 0.3,
+      max_tokens: 1000,
     });
 
     const reply =
       completion.choices?.[0]?.message?.content ||
       "Не вдалося отримати відповідь від моделі.";
 
-    res.json({ reply });
+    console.log("AI відповідь надіслано успішно");
+
+    res.json({
+      reply,
+      documentsUsed: docs.length,
+      hasAssetContext: !!assetId
+    });
   } catch (err) {
     console.error("AI backend error:", err);
-    res.status(500).json({ error: "Помилка при зверненні до OpenAI" });
+    res.status(500).json({
+      error: "Помилка при зверненні до OpenAI",
+      details: err.message
+    });
   }
 });
 
 
 
+
+// ====== КЕРУВАННЯ ДОКУМЕНТАМИ АКТИВІВ ======
+
+// Отримати всі документи конкретного активу
+app.get("/api/assets/:assetId/documents", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const assetId = req.params.assetId;
+
+    const documents = await prisma.assetDocument.findMany({
+      where: {
+        userId,
+        assetId: assetId.toString()
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        fileName: true,
+        mimeType: true,
+        fileSize: true,
+        createdAt: true,
+        text: false // Не віддаємо весь text у списку
+      }
+    });
+
+    res.json({
+      assetId,
+      count: documents.length,
+      documents
+    });
+  } catch (err) {
+    console.error("Get documents error:", err);
+    res.status(500).json({ error: "Помилка отримання документів" });
+  }
+});
+
+// Отримати конкретний документ з текстом
+app.get("/api/documents/:documentId", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const documentId = parseInt(req.params.documentId, 10);
+
+    const document = await prisma.assetDocument.findFirst({
+      where: {
+        id: documentId,
+        userId
+      }
+    });
+
+    if (!document) {
+      return res.status(404).json({ error: "Документ не знайдено" });
+    }
+
+    res.json({ document });
+  } catch (err) {
+    console.error("Get document error:", err);
+    res.status(500).json({ error: "Помилка отримання документа" });
+  }
+});
+
+// Видалити документ
+app.delete("/api/documents/:documentId", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const documentId = parseInt(req.params.documentId, 10);
+
+    const document = await prisma.assetDocument.findFirst({
+      where: {
+        id: documentId,
+        userId
+      }
+    });
+
+    if (!document) {
+      return res.status(404).json({ error: "Документ не знайдено" });
+    }
+
+    // Видаляємо фізичний файл
+    if (document.filePath && fs.existsSync(document.filePath)) {
+      try {
+        await fs.promises.unlink(document.filePath);
+        console.log("Файл видалено:", document.filePath);
+      } catch (unlinkError) {
+        console.error("Помилка видалення файлу:", unlinkError);
+        // Продовжуємо видалення запису з БД навіть якщо файл не вдалося видалити
+      }
+    }
+
+    // Видаляємо запис з БД
+    await prisma.assetDocument.delete({
+      where: { id: documentId }
+    });
+
+    res.json({ ok: true, message: "Документ видалено" });
+  } catch (err) {
+    console.error("Delete document error:", err);
+    res.status(500).json({ error: "Помилка видалення документа" });
+  }
+});
 
 // ====== ЗАВАНТАЖЕННЯ ДОКУМЕНТІВ ДЛЯ АКТИВІВ ======
 app.post(
@@ -419,7 +634,7 @@ app.post(
   upload.single("file"),
   async (req, res) => {
     try {
-      const userId = req.user.userId; // ✅ а не req.user.id
+      const userId = req.user.userId;
       const assetId = req.params.assetId;
       const file = req.file;
 
@@ -433,13 +648,20 @@ app.post(
         originalname: file.originalname,
         mimetype: file.mimetype,
         size: file.size,
+        savedPath: file.path,
       });
 
       let text = null;
       if (file.mimetype === "application/pdf") {
-        const dataBuffer = fs.readFileSync(file.path);
-        const data = await pdfParse(dataBuffer);
-        text = data.text || null;
+        try {
+          const dataBuffer = await fs.promises.readFile(file.path);
+          const data = await pdfParse(dataBuffer);
+          text = data.text || null;
+          console.log(`PDF текст витягнуто: ${text ? text.length : 0} символів`);
+        } catch (pdfError) {
+          console.error("Помилка парсингу PDF:", pdfError);
+          // Продовжуємо без тексту
+        }
       }
 
       const doc = await prisma.assetDocument.create({
@@ -448,6 +670,8 @@ app.post(
           assetId,
           fileName: file.originalname,
           mimeType: file.mimetype,
+          filePath: file.path, // Зберігаємо шлях до файлу
+          fileSize: file.size,
           text,
         },
       });
@@ -457,12 +681,32 @@ app.post(
         userId: doc.userId,
         assetId: doc.assetId,
         fileName: doc.fileName,
+        filePath: doc.filePath,
         hasText: !!doc.text,
+        textLength: doc.text ? doc.text.length : 0,
       });
 
-      res.json({ ok: true, document: doc });
+      res.json({
+        ok: true,
+        document: {
+          id: doc.id,
+          fileName: doc.fileName,
+          mimeType: doc.mimeType,
+          fileSize: doc.fileSize,
+          hasText: !!doc.text,
+          createdAt: doc.createdAt,
+        }
+      });
     } catch (err) {
       console.error("Upload document error:", err);
+      // Якщо помилка - видаляємо файл
+      if (req.file?.path) {
+        try {
+          await fs.promises.unlink(req.file.path);
+        } catch (unlinkError) {
+          console.error("Не вдалося видалити файл після помилки:", unlinkError);
+        }
+      }
       res.status(500).json({ error: "Помилка завантаження документа" });
     }
   }
@@ -725,6 +969,25 @@ app.delete("/api/account", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
 
+    // Отримуємо всі документи користувача для видалення файлів
+    const userDocuments = await prisma.assetDocument.findMany({
+      where: { userId },
+      select: { filePath: true }
+    });
+
+    // Видаляємо фізичні файли документів
+    for (const doc of userDocuments) {
+      if (doc.filePath && fs.existsSync(doc.filePath)) {
+        try {
+          await fs.promises.unlink(doc.filePath);
+          console.log("Видалено файл документа:", doc.filePath);
+        } catch (err) {
+          console.error("Помилка видалення файлу:", err);
+        }
+      }
+    }
+
+    // Видаляємо дані з БД (Prisma автоматично видалить пов'язані записи якщо є onDelete: Cascade)
     await prisma.asset.deleteMany({
       where: { category: { userId } },
     });
@@ -732,6 +995,12 @@ app.delete("/api/account", authMiddleware, async (req, res) => {
       where: { userId },
     });
     await prisma.assetSnapshot.deleteMany({
+      where: { userId },
+    });
+    await prisma.assetDocument.deleteMany({
+      where: { userId },
+    });
+    await prisma.chatMessage.deleteMany({
       where: { userId },
     });
 
@@ -805,6 +1074,23 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
 
     const userId = user.id;
 
+    // Отримуємо всі документи користувача для видалення файлів
+    const userDocuments = await prisma.assetDocument.findMany({
+      where: { userId },
+      select: { filePath: true }
+    });
+
+    // Видаляємо фізичні файли документів
+    for (const doc of userDocuments) {
+      if (doc.filePath && fs.existsSync(doc.filePath)) {
+        try {
+          await fs.promises.unlink(doc.filePath);
+        } catch (err) {
+          console.error("Помилка видалення файлу:", err);
+        }
+      }
+    }
+
     await prisma.asset.deleteMany({
       where: { category: { userId } },
     });
@@ -812,6 +1098,12 @@ app.delete("/api/admin/users/:username", authMiddleware, async (req, res) => {
       where: { userId },
     });
     await prisma.assetSnapshot.deleteMany({
+      where: { userId },
+    });
+    await prisma.assetDocument.deleteMany({
+      where: { userId },
+    });
+    await prisma.chatMessage.deleteMany({
       where: { userId },
     });
     await prisma.user.delete({ where: { id: userId } });
