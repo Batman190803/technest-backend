@@ -421,6 +421,39 @@ app.post("/api/auth/verify-email-2fa", async (req, res) => {
   }
 });
 
+// Статистика користувача (для дашборду)
+app.get("/api/stats", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // Підрахунок документів
+    const totalDocs = await prisma.assetDocument.count({
+      where: { userId }
+    });
+
+    const docsWithText = await prisma.assetDocument.count({
+      where: {
+        userId,
+        text: { not: null },
+        AND: {
+          text: { not: "" }
+        }
+      }
+    });
+
+    res.json({
+      documents: {
+        total: totalDocs,
+        withText: docsWithText,
+        withoutText: totalDocs - docsWithText
+      }
+    });
+  } catch (e) {
+    console.error("Stats error:", e);
+    res.status(500).json({ error: "Помилка отримання статистики" });
+  }
+});
+
 app.get("/api/debug/docs", authMiddleware, async (req, res) => {
   const userId = req.user.userId;
   const docs = await prisma.assetDocument.findMany({
@@ -490,19 +523,33 @@ ${textPreview}
         : "У вас ще немає завантажених документів.";
     }
 
-    // 3) Отримуємо інформацію про активи
-    const categories = await prisma.assetCategory.findMany({
-      where: { userId },
-      include: {
-        assets: true,
-        _count: {
-          select: { assets: true }
-        }
-      },
-    });
+    // 3) Отримуємо інформацію про активи з AssetSnapshot (зашифрований JSON)
+    let categories = [];
+    let totalAssets = 0;
 
-    // Підраховуємо загальну кількість активів
-    const totalAssets = categories.reduce((sum, cat) => sum + cat.assets.length, 0);
+    try {
+      const snapshot = await prisma.assetSnapshot.findUnique({
+        where: { userId }
+      });
+
+      if (snapshot && snapshot.data) {
+        try {
+          categories = decryptJson(snapshot.data);
+          console.log(`[AI] Активів з snapshot для userId ${userId}:`, categories.length, 'категорій');
+
+          // Підраховуємо загальну кількість активів
+          totalAssets = categories.reduce((sum, cat) => sum + (cat.items?.length || 0), 0);
+        } catch (decryptErr) {
+          console.error('[AI] Помилка декодування активів:', decryptErr);
+          categories = [];
+        }
+      } else {
+        console.log(`[AI] Немає snapshot для userId ${userId}`);
+      }
+    } catch (snapshotErr) {
+      console.error('[AI] Помилка читання snapshot:', snapshotErr);
+      categories = [];
+    }
 
     // Підраховуємо документи з текстом
     const docsWithText = docs.filter(d => d.text && d.text.trim().length > 0).length;
@@ -520,13 +567,15 @@ ${textPreview}
     if (totalAssets > 0) {
       assetsContext += "\n=== ВАШЕ ОБЛАДНАННЯ ===\n";
       categories.forEach(cat => {
-        if (cat.assets.length > 0) {
-          assetsContext += `\n${cat.title} (${cat.assets.length} од.):\n`;
-          cat.assets.forEach(asset => {
+        const items = cat.items || [];
+        if (items.length > 0) {
+          assetsContext += `\n${cat.title} (${items.length} од.):\n`;
+          items.forEach(asset => {
             assetsContext += `  - ${asset.name} (Інв.№ ${asset.inventoryNumber})`;
             if (asset.model) assetsContext += ` | Модель: ${asset.model}`;
             if (asset.room) assetsContext += ` | Кімната: ${asset.room}`;
             if (asset.responsible) assetsContext += ` | Відповідальний: ${asset.responsible}`;
+            if (asset.status) assetsContext += ` | Статус: ${asset.status}`;
             assetsContext += '\n';
           });
         }
@@ -997,6 +1046,50 @@ app.put("/api/assets/items/:id", authMiddleware, async (req, res) => {
   } catch (e) {
     console.error("Update asset error", e);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Видалити актив
+app.delete("/api/assets/items/:id", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const id = parseInt(req.params.id, 10);
+
+    console.log(`DELETE /api/assets/items/${id} for userId =`, userId);
+
+    // Перевіряємо чи існує актив і чи належить він користувачу
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      include: { category: true },
+    });
+
+    if (!asset) {
+      return res.status(404).json({ error: "Актив не знайдено" });
+    }
+
+    if (asset.category.userId !== userId) {
+      return res.status(403).json({ error: "Доступ заборонено" });
+    }
+
+    // Видаляємо актив
+    await prisma.asset.delete({
+      where: { id },
+    });
+
+    console.log(`✅ Актив ${id} (${asset.name}) видалено`);
+
+    res.json({
+      ok: true,
+      message: "Актив успішно видалено",
+      deletedAsset: {
+        id: asset.id,
+        name: asset.name,
+        inventoryNumber: asset.inventoryNumber,
+      },
+    });
+  } catch (e) {
+    console.error("Delete asset error", e);
+    res.status(500).json({ error: "Помилка сервера при видаленні активу" });
   }
 });
 
